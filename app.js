@@ -31,7 +31,8 @@
     return {
       settings: {
         weekBoundaryHour: 4,
-        rewardVersions: [{ effectiveFrom: start, monthlyMax: 400 }]
+        rewardVersions: [{ effectiveFrom: start, monthlyMax: 400 }],
+        timeDailyGreenPercent: 80
       },
       habits: [
         makeHabit('uni', start, 'Uni', 'time_weekly', 20, 0, { targetMinutes: 15 * 60, entryMode: 'daily' }),
@@ -67,6 +68,7 @@
     if (!state || typeof state !== 'object') state = defaultState();
     state.settings ||= {};
     state.settings.weekBoundaryHour ??= 4;
+    state.settings.timeDailyGreenPercent = clamp(Number(state.settings.timeDailyGreenPercent ?? 80), 0, 100);
     state.settings.rewardVersions ||= [{ effectiveFrom: weekStartKey(currentLifeDateKey()), monthlyMax: 400 }];
     state.habits ||= [];
     state.entries ||= {};
@@ -142,6 +144,7 @@
   }
 
   function render() {
+    document.querySelector('.app-shell')?.classList.toggle('today-mode', activeTab === 'today');
     if (activeTab === 'today') renderToday();
     else if (activeTab === 'calendar') renderCalendar();
     else if (activeTab === 'rewards') renderRewards();
@@ -152,7 +155,7 @@
 
   function renderToday() {
     const today = currentLifeDateKey();
-    pageTitle.textContent = selectedDate === today ? 'Heute' : WEEKDAY_LONG[weekdayMon0(selectedDate)];
+    pageTitle.textContent = '';
 
     const weekStart = weekStartKey(selectedDate);
     const summary = evaluateWeek(weekStart);
@@ -206,13 +209,14 @@
       <button class="tile tint-${tint} status-${display.status}" data-habit-id="${escapeAttr(habit.id)}">
         <div class="tile-head">
           <div class="tile-name">${escapeHtml(v.name)}</div>
-          <div class="streak-pill">Serie ${streak}</div>
         </div>
         <div class="tile-body">
-          ${display.main ? `<div class="tile-main ${display.small ? 'small' : ''}">${escapeHtml(display.main)}</div>` : `<div class="tile-status-space"></div>`}
+          ${display.symbol ? `<div class="tile-symbol" aria-hidden="true">${display.symbol}</div>` : ''}
+          ${display.main ? `<div class="tile-main ${display.small ? 'small' : ''}">${escapeHtml(display.main)}</div>` : ''}
           ${display.progress != null ? `<div class="tile-progress"><span style="width:${clamp(display.progress, 0, 100)}%"></span></div>` : ''}
           ${display.sub ? `<div class="tile-sub">${escapeHtml(display.sub)}</div>` : ''}
         </div>
+        <div class="tile-streak">Streak ${streak}</div>
         <div class="tile-penalty">
           <span>−${numberClean(v.penalty)}%</span>
           <span>−${numberClean(preview.points)} P</span>
@@ -227,8 +231,10 @@
     const week = weekStartKey(dateKey);
 
     if (v.type === 'daily_boolean') {
+      const status = entry?.status || 'neutral';
       return {
-        status: entry?.status || 'neutral',
+        status,
+        symbol: statusSymbol(status),
         main: '',
         sub: '',
         progress: null
@@ -239,23 +245,28 @@
       const count = weeklySuccessCount(habit.id, week, habit);
       const target = Math.max(1, Number(v.config.targetCount || 1));
       const weekEval = evaluateHabitForWeek(habit, week);
+      const status = entry?.status || (weekEval.status === 'success' ? 'success' : 'neutral');
       return {
-        status: entry?.status || (weekEval.status === 'success' ? 'success' : 'neutral'),
-        main: `${count} / ${target}`,
-        sub: 'diese Woche',
-        progress: (count / target) * 100,
-        small: true
+        status,
+        symbol: statusSymbol(status),
+        main: '',
+        sub: `${count} / ${target} diese Woche`,
+        progress: (count / target) * 100
       };
     }
 
     if (v.type === 'time_weekly') {
       const weekMinutes = sumMinutesInWeek(habit.id, week, habit, dateKey);
       const target = Math.max(0, Number(v.config.targetMinutes || 0));
-      const weekEval = evaluateHabitForWeek(habit, week);
+      const dailyMinutes = timeMinutesForDay(habit, dateKey);
+      const hasEntry = hasTimeEntryOnDate(habit, dateKey);
+      const dailyThreshold = target / 7 * (Number(state.settings.timeDailyGreenPercent ?? 80) / 100);
+      const status = !hasEntry ? 'neutral' : dailyMinutes >= dailyThreshold ? 'success' : 'fail';
       return {
-        status: weekEval.status === 'fail' ? 'fail' : weekMinutes >= target && target > 0 ? 'success' : 'neutral',
+        status,
+        symbol: '',
         main: formatDuration(weekMinutes),
-        sub: `von ${formatDuration(target)} · ${v.config.entryMode === 'cumulative' ? 'Wochenstand' : 'Wochenziel'}`,
+        sub: `${formatDuration(dailyMinutes)} heute · ${formatDuration(target)} / Woche`,
         progress: target > 0 ? (weekMinutes / target) * 100 : 0
       };
     }
@@ -267,24 +278,48 @@
         const days = next ? daysBetweenKeys(dateKey, next.windowStart) : null;
         return {
           status: 'neutral',
-          main: days === 0 ? 'ab heute' : days === 1 ? 'ab morgen' : days != null ? `in ${days} Tagen` : '',
-          sub: next ? `Termin ${formatShortDate(next.anchor)}` : '',
-          progress: null,
-          small: true
+          symbol: statusSymbol('neutral'),
+          main: '',
+          sub: next ? `${days === 0 ? 'ab heute' : days === 1 ? 'ab morgen' : `in ${days} Tagen`} · Termin ${formatShortDate(next.anchor)}` : '',
+          progress: null
         };
       }
       const successDate = cycleSuccessDate(habit, cycle);
       const fail = cycleHasExplicitFail(habit, cycle) && !successDate;
+      const status = successDate ? 'success' : fail ? 'fail' : 'neutral';
       return {
-        status: successDate ? 'success' : fail ? 'fail' : 'neutral',
-        main: successDate ? formatShortDate(successDate) : cycleTimingText(cycle, dateKey),
-        sub: `Termin ${formatShortDate(cycle.anchor)}`,
-        progress: null,
-        small: true
+        status,
+        symbol: statusSymbol(status),
+        main: '',
+        sub: `${successDate ? `erledigt ${formatShortDate(successDate)}` : cycleTimingText(cycle, dateKey)} · Termin ${formatShortDate(cycle.anchor)}`,
+        progress: null
       };
     }
 
-    return { status: 'neutral', main: '', sub: '', progress: null };
+    return { status: 'neutral', symbol: statusSymbol('neutral'), main: '', sub: '', progress: null };
+  }
+
+  function statusSymbol(status) {
+    if (status === 'success') return '✓';
+    if (status === 'fail') return '×';
+    return '?';
+  }
+
+  function hasTimeEntryOnDate(habit, dateKey) {
+    const v = habitVersion(habit, dateKey);
+    const entry = getEntry(dateKey, habit.id);
+    return Boolean(v?.type === 'time_weekly' && entry && entry.minutes != null);
+  }
+
+  function timeMinutesForDay(habit, dateKey) {
+    const v = habitVersion(habit, dateKey);
+    const entry = getEntry(dateKey, habit.id);
+    if (!v || v.type !== 'time_weekly' || !entry || entry.minutes == null) return 0;
+    const mode = entry.timeMode || v.config?.entryMode || 'daily';
+    if (mode !== 'cumulative') return Math.max(0, Number(entry.minutes || 0));
+    const week = weekStartKey(dateKey);
+    const previous = sumMinutesInWeek(habit.id, week, habit, addDaysKey(dateKey, -1));
+    return Math.max(0, Number(entry.minutes || 0) - previous);
   }
 
   function handleTileClick(habitId, dateKey) {
@@ -313,15 +348,13 @@
 
   function penaltyPreview(habit, weekStart, configuredPenalty) {
     const ev = evaluateWeek(weekStart);
-    let base = 100;
-    for (const item of ev.items) {
-      if (item.habitId === habit.id) continue;
-      if (item.status === 'fail') base *= (100 - clamp(item.penalty, 0, 100)) / 100;
-    }
-    const points = round1(base * clamp(configuredPenalty, 0, 100) / 100);
-    const money = roundMoney(weeklyRewardForWeek(weekStart) * points / 100);
+    const factor = clamp(configuredPenalty, 0, 100) / 100;
+    const points = round1(ev.score * factor);
+    const currentMoney = weeklyRewardForWeek(weekStart) * ev.score / 100;
+    const money = roundMoney(currentMoney * factor);
     return { points, money };
   }
+
 
   // -------------------- Calendar --------------------
 
@@ -515,6 +548,13 @@
         <button class="primary-button" id="addHabit">+ Habit</button>
         <button class="secondary-button" id="dataTools">Daten</button>
       </div>
+      <div class="global-setting">
+        <div>
+          <span class="global-setting-label">Zeit grün ab</span>
+          <strong id="timeGreenValue">${numberClean(state.settings.timeDailyGreenPercent)}%</strong>
+        </div>
+        <input id="timeGreenThreshold" class="setting-range" type="range" min="50" max="100" step="5" value="${state.settings.timeDailyGreenPercent}" aria-label="Zeit grün ab Prozent des Tagesrichtwerts" />
+      </div>
       <div class="habit-list" id="habitList">
         ${habits.map(renderHabitRow).join('') || '<div class="empty-state">Keine Habits</div>'}
       </div>
@@ -522,6 +562,12 @@
 
     document.getElementById('addHabit').onclick = () => openHabitModal(null);
     document.getElementById('dataTools').onclick = openDataTools;
+    const threshold = document.getElementById('timeGreenThreshold');
+    threshold.oninput = () => {
+      state.settings.timeDailyGreenPercent = Number(threshold.value);
+      document.getElementById('timeGreenValue').textContent = `${threshold.value}%`;
+      saveState();
+    };
     document.querySelectorAll('.habit-edit-area').forEach(btn => {
       btn.onclick = () => openHabitModal(btn.dataset.habitId);
     });
@@ -822,13 +868,15 @@
       el.scrollTop = clamp(selected, 0, el.children.length - 1) * ITEM;
     });
 
-    let timer;
+    let snapTimer;
+    const snap = () => {
+      const idx = clamp(Math.round(el.scrollTop / ITEM), 0, el.children.length - 1);
+      el.scrollTo({ top: idx * ITEM, behavior: 'smooth' });
+    };
+
     el.addEventListener('scroll', () => {
-      clearTimeout(timer);
-      timer = setTimeout(() => {
-        const idx = clamp(Math.round(el.scrollTop / ITEM), 0, el.children.length - 1);
-        el.scrollTo({ top: idx * ITEM, behavior: 'smooth' });
-      }, 80);
+      clearTimeout(snapTimer);
+      snapTimer = setTimeout(snap, 110);
     }, { passive: true });
 
     el.addEventListener('click', e => {
@@ -837,7 +885,34 @@
       const idx = [...el.children].indexOf(item);
       el.scrollTo({ top: idx * ITEM, behavior: 'smooth' });
     });
+
+    let dragging = false;
+    let startY = 0;
+    let startScroll = 0;
+    el.addEventListener('pointerdown', e => {
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      dragging = true;
+      startY = e.clientY;
+      startScroll = el.scrollTop;
+      el.setPointerCapture?.(e.pointerId);
+      el.classList.add('drag-active');
+    });
+    el.addEventListener('pointermove', e => {
+      if (!dragging) return;
+      e.preventDefault();
+      el.scrollTop = startScroll + (startY - e.clientY);
+    });
+    const endDrag = e => {
+      if (!dragging) return;
+      dragging = false;
+      el.releasePointerCapture?.(e.pointerId);
+      el.classList.remove('drag-active');
+      snap();
+    };
+    el.addEventListener('pointerup', endDrag);
+    el.addEventListener('pointercancel', endDrag);
   }
+
 
   function wheelValue(el) {
     if (!el || !el.children.length) return 0;
@@ -979,12 +1054,16 @@
     if (v.type === 'time_weekly') {
       const minutes = sumMinutesInWeek(habit.id, weekStart, habit);
       const target = Math.max(0, Number(v.config.targetMinutes || 0));
-      const entries = datesInWeek(weekStart)
-        .filter(d => d <= observedEnd && habitActiveOnDate(habit, d) && habitVersion(habit, d)?.type === 'time_weekly')
-        .map(d => getEntry(d, habit.id))
-        .filter(e => e && e.minutes != null);
-      const explicitFail = datesInWeek(weekStart).some(d => getEntry(d, habit.id)?.status === 'fail' && habitVersion(habit, d)?.type === 'time_weekly');
-      const status = target > 0 && minutes >= target ? 'success' : explicitFail || (isClosedWeek(weekStart) && entries.length > 0) ? 'fail' : 'neutral';
+      const dailyThreshold = target / 7 * (Number(state.settings.timeDailyGreenPercent ?? 80) / 100);
+      const observedDates = datesInWeek(weekStart)
+        .filter(d => d <= observedEnd && habitActiveOnDate(habit, d) && habitVersion(habit, d)?.type === 'time_weekly');
+      const enteredDates = observedDates.filter(d => hasTimeEntryOnDate(habit, d));
+      const hasLowDay = enteredDates.some(d => timeMinutesForDay(habit, d) < dailyThreshold);
+      const status = target > 0 && minutes >= target
+        ? 'success'
+        : hasLowDay || (isClosedWeek(weekStart) && enteredDates.length > 0)
+          ? 'fail'
+          : 'neutral';
       return { applicable: true, status, detail: `${formatDuration(minutes)} / ${formatDuration(target)}`, order: v.order };
     }
 
