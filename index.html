@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#f6f7f9" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="LifeCheck" />
+  <title>LifeCheck</title>
+  <link rel="manifest" href="./manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="./icon-192.png" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div>
+        <div class="eyebrow">LifeCheck</div>
+        <h1 id="pageTitle">Heute</h1>
+      </div>
+      <button class="icon-button" id="settingsQuick" aria-label="Habits verwalten" title="Habits verwalten">
+        <span>⚙</span>
+      </button>
+    </header>
+
+    <main id="app" class="app-content" aria-live="polite"></main>
+
+    <nav class="bottom-nav" aria-label="Hauptnavigation">
+      <button class="nav-item active" data-tab="today">
+        <span class="nav-icon">⌂</span>
+        <span>Heute</span>
+      </button>
+      <button class="nav-item" data-tab="calendar">
+        <span class="nav-icon">▦</span>
+        <span>Kalender</span>
+      </button>
+      <button class="nav-item" data-tab="rewards">
+        <span class="nav-icon">€</span>
+        <span>Belohnung</span>
+      </button>
+      <button class="nav-item" data-tab="habits">
+        <span class="nav-icon">☷</span>
+        <span>Habits</span>
+      </button>
+    </nav>
+  </div>
+
+  <div class="modal-backdrop hidden" id="modalBackdrop" role="presentation">
+    <section class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle"></section>
+  </div>
+
+  <input type="file" id="importInput" accept="application/json" hidden />
+
+  <script src="./app.js" defer></script>
+</body>
+</html>
