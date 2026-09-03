@@ -571,3 +571,84 @@ h3 { font-size: 16px; letter-spacing: -0.015em; }
   .app-shell { min-height: calc(100dvh - 32px); border-radius: 28px; overflow: hidden; box-shadow: 0 20px 70px rgba(24,28,35,.12); }
   .bottom-nav { bottom: 16px; border-radius: 0 0 28px 28px; }
 }
+
+
+/* v1.1 — reduced mobile UI */
+.topbar {
+  align-items: center;
+  padding: calc(10px + env(safe-area-inset-top)) 14px 7px;
+}
+.topbar h1 { font-size: 21px; margin: 0; letter-spacing: -0.03em; }
+.icon-button { width: 36px; height: 36px; border-radius: 12px; box-shadow: none; border: 1px solid var(--line); }
+.app-content { padding-top: 2px; }
+
+.date-switcher.compact {
+  grid-template-columns: 36px 1fr 36px;
+  gap: 7px;
+  margin: 0 0 7px;
+}
+.date-switcher.compact .date-center,
+.date-switcher.compact .date-arrow {
+  min-height: 38px;
+  height: 38px;
+  border-radius: 12px;
+}
+.date-switcher.compact .date-center { padding: 4px 8px; }
+.date-switcher.compact .date-center strong { font-size: 13px; }
+.date-switcher.compact .date-arrow { font-size: 18px; }
+
+.today-summary {
+  height: 30px;
+  margin: 0 2px 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--muted);
+  font-size: 12px;
+}
+.today-summary strong {
+  color: var(--text);
+  font-size: 15px;
+  letter-spacing: -0.02em;
+}
+
+.tile-grid { gap: 9px; }
+.tile {
+  min-height: 112px;
+  height: 112px;
+  border-radius: 18px;
+  padding: 12px;
+  background: var(--surface) !important;
+  border: 2px solid #dfe3e8;
+  box-shadow: none;
+  justify-content: space-between;
+}
+.tile.status-success { border-color: #45a875; }
+.tile.status-fail { border-color: #d75e55; }
+.tile.status-neutral,
+.tile.status-warning { border-color: #dfe3e8; }
+.tile-name {
+  font-size: 12px;
+  line-height: 1.2;
+  color: #343941;
+}
+.tile-main {
+  font-size: 19px;
+  line-height: 1.15;
+  margin-top: auto;
+}
+.tile-main.small { font-size: 18px; }
+.tile-foot {
+  margin-top: 5px;
+  font-size: 10px;
+  justify-content: flex-start;
+}
+.tile-badge, .tile-sub { display: none !important; }
+
+.calendar-legend { display:none; }
+.compact-actions { margin: 2px 0 12px; }
+.habit-list { margin-top: 0; }
+
+.detail-row.status-success { border-left: 3px solid #45a875; }
+.detail-row.status-fail { border-left: 3px solid #d75e55; }
+.detail-row.status-neutral { border-left: 3px solid #dfe3e8; }

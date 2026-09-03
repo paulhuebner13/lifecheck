@@ -34,8 +34,8 @@
         rewardVersions: [{ effectiveFrom: start, monthlyMax: 400 }]
       },
       habits: [
-        makeHabit('uni', start, 'Uni', 'time_weekly', 20, 0, { targetMinutes: 15 * 60 }),
-        makeHabit('arbeit', start, 'Arbeit', 'time_weekly', 15, 1, { targetMinutes: 20 * 60 }),
+        makeHabit('uni', start, 'Uni', 'time_weekly', 20, 0, { targetMinutes: 15 * 60, entryMode: 'daily' }),
+        makeHabit('arbeit', start, 'Arbeit', 'time_weekly', 15, 1, { targetMinutes: 20 * 60, entryMode: 'cumulative' }),
         makeHabit('kein-porn', start, 'Kein Porn', 'daily_boolean', 20, 2, { weekdays: [0,1,2,3,4,5,6] }),
         makeHabit('aufraeumen', start, 'Aufräumen', 'weekly_count', 10, 3, { targetCount: 5 }),
         makeHabit('waesche', start, 'Wäsche', 'weekly_count', 5, 4, { targetCount: 1 }),
@@ -79,6 +79,14 @@
     state.entries ||= {};
     state.transfers ||= [];
     state.meta ||= { createdAt: new Date().toISOString(), version: 1 };
+    for (const habit of state.habits) {
+      for (const version of habit.versions || []) {
+        version.config ||= {};
+        if (version.type === 'time_weekly' && !version.config.entryMode) {
+          version.config.entryMode = habit.id === 'arbeit' ? 'cumulative' : 'daily';
+        }
+      }
+    }
   }
 
   function loadState() {
@@ -142,44 +150,22 @@
       .sort((a,b) => habitVersion(a, selectedDate).order - habitVersion(b, selectedDate).order);
 
     app.innerHTML = `
-      <div class="date-switcher">
+      <div class="date-switcher compact">
         <button class="date-arrow" id="prevDay" aria-label="Voriger Tag">‹</button>
         <button class="date-center" id="jumpToday">
           <strong>${formatFullDate(selectedDate)}</strong>
-          <span>${selectedDate === currentLifeDateKey() ? 'aktueller Life-Tag · 04:00–03:59' : 'Tippen für heute'}</span>
         </button>
         <button class="date-arrow" id="nextDay" aria-label="Nächster Tag" ${selectedDate >= currentLifeDateKey() ? 'disabled' : ''}>›</button>
       </div>
 
-      <section class="summary-card">
-        <div class="summary-top">
-          <div>
-            <div class="summary-kicker">${isClosedWeek(currentWeekStart) ? 'Wochenwertung' : 'Aktuell gesichert'}</div>
-            <div class="summary-score">${summary.score}%</div>
-          </div>
-          <div class="summary-money">
-            <strong>${formatMoney(money)}</strong>
-            <span>von ${formatMoney(reward)} diese Woche</span>
-          </div>
-        </div>
-        <div class="progress-track"><div class="progress-fill" style="width:${summary.score}%"></div></div>
-        <div class="summary-meta">
-          <span>${summary.successCount} geschafft · ${summary.failCount} rot · ${summary.neutralCount} offen</span>
-          <span>${formatWeekRange(currentWeekStart)}</span>
-        </div>
-      </section>
+      <div class="today-summary">
+        <strong>${summary.score}%</strong>
+        <span>${formatMoney(money)} / ${formatMoney(reward)}</span>
+      </div>
 
-      <section class="section">
-        <div class="section-header">
-          <div>
-            <div class="section-title">Deine Habits</div>
-            <div class="section-subtitle">Grau → Grün → Rot · Zeit öffnet Eingabe</div>
-          </div>
-        </div>
-        ${habits.length ? `<div class="tile-grid">${habits.map(h => renderHabitTile(h, selectedDate)).join('')}</div>` : `
-          <div class="card empty-state"><strong>Keine aktiven Habits</strong>Lege im Habits-Tab dein erstes Ziel an.</div>
-        `}
-      </section>
+      ${habits.length ? `<div class="tile-grid">${habits.map(h => renderHabitTile(h, selectedDate)).join('')}</div>` : `
+        <div class="card empty-state">Keine Habits</div>
+      `}
     `;
 
     document.getElementById('prevDay').onclick = () => { selectedDate = addDaysKey(selectedDate, -1); renderToday(); };
@@ -200,18 +186,9 @@
     const display = tileDisplay(habit, v, dateKey);
     return `
       <button class="tile status-${display.status}" data-habit-id="${escapeHtml(habit.id)}">
-        <div class="tile-top">
-          <div class="tile-name">${escapeHtml(v.name)}</div>
-          <div class="tile-badge">${display.icon}</div>
-        </div>
-        <div>
-          <div class="tile-main ${display.small ? 'small' : ''}">${escapeHtml(display.main)}</div>
-          <div class="tile-sub">${escapeHtml(display.sub)}</div>
-        </div>
-        <div class="tile-foot">
-          <span class="tile-week-progress">${escapeHtml(display.footLeft)}</span>
-          <span>−${numberClean(v.penalty)}%</span>
-        </div>
+        <div class="tile-name">${escapeHtml(v.name)}</div>
+        <div class="tile-main ${display.small ? 'small' : ''}">${escapeHtml(display.main || '')}</div>
+        ${display.footLeft ? `<div class="tile-foot"><span>${escapeHtml(display.footLeft)}</span></div>` : ''}
       </button>
     `;
   }
@@ -220,18 +197,14 @@
     const entry = getEntry(dateKey, habit.id);
     const week = weekStartKey(dateKey);
     const weekly = evaluateHabitForWeek(habit, week, isClosedWeek(week));
-    const iconByStatus = { success: '✓', fail: '×', neutral: '○', warning: '!' };
 
     if (v.type === 'time_weekly') {
-      const minutes = entry?.minutes || 0;
-      const status = entry?.status === 'fail' ? 'fail' : minutes > 0 ? 'success' : 'neutral';
-      const weekMinutes = sumMinutesInWeek(habit.id, week, habit);
+      const weekMinutes = sumMinutesInWeek(habit.id, week, habit, dateKey);
+      const status = entry?.status === 'fail' ? 'fail' : entry?.minutes != null ? 'success' : 'neutral';
       return {
         status,
-        icon: iconByStatus[status],
-        main: minutes ? formatDuration(minutes) : '0 min',
-        sub: 'Tippen, um Zeit einzutragen',
-        footLeft: `${formatDuration(weekMinutes)} / ${formatDuration(v.config.targetMinutes)} Woche`
+        main: `${formatDuration(weekMinutes)} / ${formatDuration(v.config.targetMinutes)}`,
+        footLeft: v.config.entryMode === 'cumulative' ? 'Wochenstand' : ''
       };
     }
 
@@ -242,10 +215,8 @@
       const required = dailyRequiredDates(habit, week).length;
       return {
         status,
-        icon: relevant ? iconByStatus[status] : '–',
-        main: relevant ? statusLabel(status) : 'frei',
-        sub: relevant ? 'Tippen: grau → grün → rot' : 'Heute nicht eingeplant',
-        footLeft: `${done} / ${required} Tage diese Woche`,
+        main: relevant ? `${done} / ${required}` : '–',
+        footLeft: '',
         small: true
       };
     }
@@ -255,11 +226,9 @@
       const count = weeklySuccessCount(habit.id, week, habit);
       return {
         status,
-        icon: iconByStatus[status],
-        main: status === 'success' ? 'gemacht' : status === 'fail' ? 'nicht gemacht' : `${count} / ${v.config.targetCount}`,
-        sub: 'Tippen: grau → grün → rot',
-        footLeft: `${count} / ${v.config.targetCount} diese Woche`,
-        small: status !== 'neutral'
+        main: `${count} / ${v.config.targetCount}`,
+        footLeft: '',
+        small: true
       };
     }
 
@@ -269,29 +238,24 @@
       if (!cycle) {
         const days = next ? daysBetweenKeys(dateKey, next.windowStart) : null;
         return {
-          status: 'neutral', icon: '○',
-          main: days === 0 ? 'ab heute' : days === 1 ? 'ab morgen' : days != null ? `in ${days} Tagen` : 'kein Termin',
-          sub: next ? `Fenster ${formatShortDate(next.windowStart)}–${formatShortDate(next.windowEnd)} · fällig ${formatShortDate(next.anchor)}` : 'Kein aktiver Zyklus',
-          footLeft: next ? `Rhythmus: alle ${v.config.everyWeeks} Wo.` : '',
+          status: 'neutral',
+          main: days === 0 ? 'ab heute' : days === 1 ? 'ab morgen' : days != null ? `in ${days} Tagen` : '–',
+          footLeft: next ? `fällig ${formatShortDate(next.anchor)}` : '',
           small: true
         };
       }
       const successDate = cycleSuccessDate(habit, cycle);
       const explicit = entry?.status;
-      let status = successDate ? 'success' : (dateKey > cycle.windowEnd ? 'fail' : explicit || 'neutral');
-      const today = currentLifeDateKey();
-      const relative = cycleTimingText(cycle, today);
+      const status = successDate ? 'success' : (dateKey > cycle.windowEnd ? 'fail' : explicit || 'neutral');
       return {
         status,
-        icon: iconByStatus[status],
-        main: successDate ? 'erledigt' : relative,
-        sub: successDate ? `am ${formatShortDate(successDate)} · nächster Termin bleibt fix` : `fällig ${formatShortDate(cycle.anchor)} · bis ${formatShortDate(cycle.windowEnd)}`,
-        footLeft: `Fenster ${formatShortDate(cycle.windowStart)}–${formatShortDate(cycle.windowEnd)}`,
+        main: successDate ? formatShortDate(successDate) : cycleTimingText(cycle, dateKey),
+        footLeft: `fällig ${formatShortDate(cycle.anchor)}`,
         small: true
       };
     }
 
-    return { status: weekly.status, icon: iconByStatus[weekly.status], main: statusLabel(weekly.status), sub: '', footLeft: '' };
+    return { status: weekly.status, main: '', footLeft: '' };
   }
 
   function handleTileClick(habitId, dateKey) {
@@ -305,13 +269,7 @@
     }
     if (v.type === 'anchored_cycle') {
       const cycle = cycleForDate(habit, dateKey);
-      if (!cycle) {
-        const next = nextCycleForDate(habit, dateKey);
-        openInfoModal(v.name, next
-          ? `Das nächste erlaubte Fenster ist ${formatShortDate(next.windowStart)} bis ${formatShortDate(next.windowEnd)}. Der feste Termin bleibt ${formatShortDate(next.anchor)}.`
-          : 'Für diesen Tag gibt es kein aktives Zeitfenster.');
-        return;
-      }
+      if (!cycle) return;
     }
     cycleSimpleEntry(dateKey, habitId);
     saveState();
@@ -334,11 +292,6 @@
     for (let i = 0; i < calendarWeeksShown; i++) weeks.push(addDaysKey(currentWeek, -7 * i));
 
     app.innerHTML = `
-      <div class="calendar-legend">
-        <span><i class="legend-dot green"></i>geschafft</span>
-        <span><i class="legend-dot red"></i>nicht geschafft</span>
-        <span><i class="legend-dot gray"></i>offen / nicht bewertet</span>
-      </div>
       <div class="list">
         ${weeks.map(renderWeekRow).join('')}
       </div>
@@ -366,7 +319,7 @@
         <div class="week-row-head">
           <div>
             <div class="week-date">${formatWeekRange(weekStart)}</div>
-            <div class="week-money">${closed ? formatMoney(money) + ' verdient' : 'läuft · ' + formatMoney(money) + ' aktuell gesichert'}</div>
+            <div class="week-money">${formatMoney(money)} / ${formatMoney(weeklyMax)}</div>
           </div>
           <div class="week-score">${ev.score}%</div>
         </div>
@@ -381,14 +334,13 @@
     const weeklyMax = weeklyRewardForWeek(weekStart);
     const money = roundMoney(weeklyMax * ev.score / 100);
     const rows = ev.items.map(item => `
-      <div class="detail-row">
+      <div class="detail-row status-${item.status}">
         <div>
           <div class="detail-title">${escapeHtml(item.name)}</div>
           <div class="detail-meta">${escapeHtml(item.detail)}</div>
         </div>
         <div class="detail-result">
-          <strong>${item.status === 'success' ? '✓ geschafft' : item.status === 'fail' ? `× −${numberClean(item.penalty)}%` : '○ offen'}</strong>
-          <span>${item.status === 'success' ? 'kein Abzug' : item.status === 'fail' ? 'Abwertung' : 'noch nicht final'}</span>
+          <strong>${item.status === 'success' ? '100%' : `× ${numberClean(100 - item.penalty)}%`}</strong>
         </div>
       </div>
     `).join('');
@@ -397,7 +349,6 @@
       <div class="modal-head">
         <div>
           <div class="modal-title" id="modalTitle">${formatWeekRange(weekStart)}</div>
-          <div class="modal-subtitle">${closed ? 'Abgeschlossene Woche' : 'Laufende Woche'}</div>
         </div>
         <button class="modal-close" data-close>×</button>
       </div>
@@ -406,7 +357,6 @@
         <div class="metric-card"><div class="metric-label">Belohnung</div><div class="metric-value">${formatMoney(money)}</div><div class="metric-sub">max. ${formatMoney(weeklyMax)}</div></div>
       </div>
       <div class="detail-list">${rows || '<div class="empty-state">Keine Habits für diese Woche.</div>'}</div>
-      <div class="inline-note" style="margin-top:12px">Vergangene Daten können weiterhin korrigiert werden. Die Bewertung wird danach automatisch neu berechnet; Regeln aus späteren Habit-Versionen verändern alte Wochen nicht.</div>
     `);
   }
 
@@ -443,7 +393,7 @@
           </div>
           <div class="summary-money"><strong>${formatMoney(earned)}</strong><span>insgesamt verdient</span></div>
         </div>
-        <div class="summary-meta"><span>${formatMoney(transferred)} bereits überwiesen</span><span>Stichtag Montag 04:00</span></div>
+        <div class="summary-meta"><span>${formatMoney(transferred)} bereits überwiesen</span></div>
       </section>
 
       <section class="section">
@@ -461,8 +411,8 @@
       </section>
 
       <section class="section">
-        <div class="section-header"><div><div class="section-title">Überweisungen</div><div class="section-subtitle">Nur deine echten Konto-Überweisungen</div></div></div>
-        <div class="card">${transferRows || '<div class="empty-state"><strong>Noch nichts überwiesen</strong>Wenn du Geld wirklich verschiebst, trägst du es hier ein.</div>'}</div>
+        <div class="section-header"><div class="section-title">Überweisungen</div></div>
+        <div class="card">${transferRows || '<div class="empty-state">Keine Überweisungen</div>'}</div>
       </section>
     `;
 
@@ -498,14 +448,13 @@
     const current = rewardVersionForWeek(currentWeek)?.monthlyMax || 0;
     openModal(`
       <div class="modal-head">
-        <div><div class="modal-title" id="modalTitle">Belohnungs-Maximum</div><div class="modal-subtitle">Änderungen gelten ab der laufenden Woche, alte Wochen bleiben unverändert.</div></div>
+        <div><div class="modal-title" id="modalTitle">Belohnungs-Maximum</div></div>
         <button class="modal-close" data-close>×</button>
       </div>
       <form id="rewardForm">
         <div class="form-group">
           <label class="form-label">Maximal pro Monat</label>
           <input class="form-input" id="monthlyMax" type="number" min="0" step="5" value="${current}" required />
-          <div class="help">Wochen-Maximum = Monatsbetrag × 12 ÷ 52, anschließend auf die nächsten 5 € nach unten gerundet.</div>
         </div>
         <div class="inline-note">Bei ${formatMoney(current)} pro Monat sind aktuell maximal ${formatMoney(weeklyRewardFromMonthly(current))} pro Woche möglich.</div>
         <button class="primary-button full" style="margin-top:12px" type="submit">Speichern</button>
@@ -534,21 +483,13 @@
       .sort((a,b) => (habitVersion(a, today)?.order ?? 999) - (habitVersion(b, today)?.order ?? 999));
 
     app.innerHTML = `
-      <section class="section" style="margin-top:2px">
-        <div class="button-row">
-          <button class="primary-button" id="addHabit">+ Habit</button>
-          <button class="secondary-button" id="dataTools">Daten</button>
-        </div>
-      </section>
-      <section class="section">
-        <div class="section-header"><div><div class="section-title">Aktive Habits</div><div class="section-subtitle">Reihenfolge = Startseite & Kalender</div></div></div>
-        <div class="list">
-          ${habits.map((h,i) => renderHabitRow(h, i, habits.length)).join('') || '<div class="card empty-state"><strong>Noch keine Habits</strong>Füge dein erstes Habit hinzu.</div>'}
-        </div>
-      </section>
-      <section class="section">
-        <div class="inline-note">Beim Bearbeiten wird eine neue Version angelegt. Alte Wochen behalten Name, Ziel, Rhythmus und Abwertungsfaktor von damals. „Entfernen“ beendet ein Habit nur ab dem gewählten Datum – die Historie bleibt erhalten.</div>
-      </section>
+      <div class="button-row compact-actions">
+        <button class="primary-button" id="addHabit">+ Habit</button>
+        <button class="secondary-button" id="dataTools">Daten</button>
+      </div>
+      <div class="list habit-list">
+        ${habits.map((h,i) => renderHabitRow(h, i, habits.length)).join('') || '<div class="card empty-state">Keine Habits</div>'}
+      </div>
     `;
 
     document.getElementById('addHabit').onclick = () => openHabitModal(null);
@@ -574,7 +515,7 @@
       <button class="habit-row" data-habit-id="${escapeHtml(habit.id)}">
         <div>
           <div class="habit-row-title">${escapeHtml(v.name)}</div>
-          <div class="habit-row-meta">${escapeHtml(habitRuleText(v))} · −${numberClean(v.penalty)}%</div>
+          <div class="habit-row-meta">${escapeHtml(habitRuleText(v))} · ×${numberClean(100 - v.penalty)}%</div>
         </div>
         <div class="row-actions">
           <button class="small-button" data-move="-1" data-habit-id="${escapeHtml(habit.id)}" ${index === 0 ? 'disabled' : ''}>↑</button>
@@ -608,7 +549,7 @@
 
     openModal(`
       <div class="modal-head">
-        <div><div class="modal-title" id="modalTitle">${habit ? 'Habit bearbeiten' : 'Neues Habit'}</div><div class="modal-subtitle">Klare Grenzen, keine Zwischenwertung.</div></div>
+        <div><div class="modal-title" id="modalTitle">${habit ? 'Habit bearbeiten' : 'Neues Habit'}</div></div>
         <button class="modal-close" data-close>×</button>
       </div>
       <form id="habitForm">
@@ -625,7 +566,7 @@
           <div class="form-group"><label class="form-label">Abwertung in %</label><input class="form-input" id="habitPenalty" type="number" min="0" max="100" step="1" value="${existing?.penalty ?? 10}" required /></div>
         </div>
         <div id="typeFields"></div>
-        <div class="form-group"><label class="form-label">Änderung gilt ab</label><input class="form-input" id="effectiveFrom" type="date" value="${today}" required /><div class="help">Für Wochenziele empfiehlt sich Montag. Frühere Wochen werden nicht verändert.</div></div>
+        <div class="form-group"><label class="form-label">Gilt ab</label><input class="form-input" id="effectiveFrom" type="date" value="${today}" required /></div>
         <div class="button-row ${habit ? '' : ''}">
           <button class="primary-button" type="submit">${habit ? 'Änderung speichern' : 'Habit anlegen'}</button>
           ${habit ? '<button class="danger-button" type="button" id="endHabit">Entfernen</button>' : '<button class="secondary-button" type="button" data-close>Abbrechen</button>'}
@@ -661,7 +602,8 @@
           versions: [{ effectiveFrom, name, type, penalty, order: maxOrder + 1, config }]
         });
       }
-      saveState(); closeModal(); renderHabits(); toast(habit ? 'Habit-Version gespeichert.' : 'Habit angelegt.');
+      selectedDate = currentLifeDateKey();
+      saveState(); closeModal(); renderHabits();
     };
 
     if (habit) {
@@ -669,7 +611,8 @@
         const effectiveFrom = document.getElementById('effectiveFrom').value;
         openConfirmModal('Habit entfernen?', `${existing.name} wird ab ${formatShortDate(effectiveFrom)} nicht mehr angezeigt oder bewertet. Vergangene Daten bleiben erhalten.`, () => {
           habit.endedAt = effectiveFrom;
-          saveState(); closeModal(); renderHabits(); toast('Habit ab diesem Datum beendet.');
+          selectedDate = currentLifeDateKey();
+          saveState(); closeModal(); renderHabits();
         });
       };
     }
@@ -683,18 +626,24 @@
       box.innerHTML = `
         <div class="form-group"><label class="form-label">Relevante Tage</label>
           <div class="weekday-picker">${WEEKDAYS.map((d,i) => `<label><input type="checkbox" name="weekday" value="${i}" ${weekdays.includes(i)?'checked':''}><span>${d}</span></label>`).join('')}</div>
-          <div class="help">Jeder ausgewählte Tag muss grün sein. Ein roter Tag macht das Wochen-Habit sofort rot.</div>
         </div>`;
     } else if (type === 'weekly_count') {
       box.innerHTML = `<div class="form-group"><label class="form-label">Wie oft pro Woche?</label><input class="form-input" id="targetCount" type="number" min="1" max="30" step="1" value="${config.targetCount || 1}" required /></div>`;
     } else if (type === 'time_weekly') {
       const mins = config.targetMinutes || 60;
+      const entryMode = config.entryMode || 'daily';
       box.innerHTML = `
         <div class="form-grid-2">
           <div class="form-group"><label class="form-label">Stunden / Woche</label><input class="form-input" id="targetHours" type="number" min="0" max="168" value="${Math.floor(mins/60)}" required /></div>
           <div class="form-group"><label class="form-label">Minuten</label><input class="form-input" id="targetMinutesRemainder" type="number" min="0" max="59" value="${mins%60}" required /></div>
         </div>
-        <div class="help" style="margin-top:-8px;margin-bottom:14px">Kein künstliches Tages-Soll. Die harte Grenze gilt für die gesamte Woche.</div>`;
+        <div class="form-group">
+          <label class="form-label">Eingabe</label>
+          <select class="form-select" id="timeEntryMode">
+            <option value="daily" ${entryMode === 'daily' ? 'selected' : ''}>Zeit dieses Tages</option>
+            <option value="cumulative" ${entryMode === 'cumulative' ? 'selected' : ''}>Wochenstand bis zu diesem Tag</option>
+          </select>
+        </div>`;
     } else {
       const cfg = config || {};
       box.innerHTML = `
@@ -706,7 +655,7 @@
           <div class="form-group"><label class="form-label">Tage vorher erlaubt</label><input class="form-input" id="windowBefore" type="number" min="0" max="30" value="${cfg.windowBefore ?? 1}" required /></div>
           <div class="form-group"><label class="form-label">Tage danach erlaubt</label><input class="form-input" id="windowAfter" type="number" min="0" max="30" value="${cfg.windowAfter ?? 2}" required /></div>
         </div>
-        <div class="inline-note" style="margin-bottom:14px">Beispiel: Termin Sonntag, −1/+2 Tage = Samstag bis Dienstag. Erledigst du es Samstag, bleibt der nächste Termin trotzdem wieder der festgelegte Wochentag.</div>`;
+        `;
     }
   }
 
@@ -718,7 +667,7 @@
     if (type === 'time_weekly') {
       const h = Math.max(0, Number(document.getElementById('targetHours').value || 0));
       const m = Math.max(0, Math.min(59, Number(document.getElementById('targetMinutesRemainder').value || 0)));
-      return { targetMinutes: h * 60 + m };
+      return { targetMinutes: h * 60 + m, entryMode: document.getElementById('timeEntryMode')?.value || 'daily' };
     }
     return {
       everyWeeks: Math.max(1, Number(document.getElementById('everyWeeks').value || 1)),
@@ -731,28 +680,35 @@
   function openTimeModal(habit, dateKey) {
     const v = habitVersion(habit, dateKey);
     const entry = getEntry(dateKey, habit.id);
-    const minutes = entry?.minutes || 0;
     const week = weekStartKey(dateKey);
-    const weekMinutes = sumMinutesInWeek(habit.id, week, habit);
+    const mode = v.config.entryMode || 'daily';
+    const weekMinutes = sumMinutesInWeek(habit.id, week, habit, dateKey);
+    const previousWeekMinutes = sumMinutesInWeek(habit.id, week, habit, addDaysKey(dateKey, -1));
+    const minutes = mode === 'cumulative'
+      ? (entry?.minutes != null ? Number(entry.minutes) : previousWeekMinutes)
+      : Number(entry?.minutes || 0);
+
     openModal(`
       <div class="modal-head">
-        <div><div class="modal-title" id="modalTitle">${escapeHtml(v.name)}</div><div class="modal-subtitle">${formatFullDate(dateKey)} · Woche ${formatDuration(weekMinutes)} / ${formatDuration(v.config.targetMinutes)}</div></div>
+        <div>
+          <div class="modal-title" id="modalTitle">${escapeHtml(v.name)}</div>
+          <div class="modal-subtitle">${mode === 'cumulative' ? 'Wochenstand' : formatShortDate(dateKey)} · ${formatDuration(weekMinutes)} / ${formatDuration(v.config.targetMinutes)}</div>
+        </div>
         <button class="modal-close" data-close>×</button>
       </div>
       <form id="timeForm">
         <div class="time-input-wrap">
-          <div class="time-box"><label>STUNDEN</label><input id="timeHours" type="number" inputmode="numeric" min="0" max="24" value="${Math.floor(minutes/60)}"></div>
+          <div class="time-box"><label>STUNDEN</label><input id="timeHours" type="number" inputmode="numeric" min="0" max="168" value="${Math.floor(minutes/60)}"></div>
           <div class="time-box"><label>MINUTEN</label><input id="timeMinutes" type="number" inputmode="numeric" min="0" max="59" value="${minutes%60}"></div>
         </div>
         <div class="quick-chips">
           <button type="button" class="quick-chip" data-add-min="30">+30 min</button>
           <button type="button" class="quick-chip" data-add-min="60">+1 h</button>
           <button type="button" class="quick-chip" data-add-min="120">+2 h</button>
-          <button type="button" class="quick-chip" data-add-min="180">+3 h</button>
         </div>
         <div class="button-row three" style="margin-top:16px">
           <button class="primary-button" type="submit">Speichern</button>
-          <button class="danger-button" type="button" id="timeFail">Nicht gemacht</button>
+          <button class="danger-button" type="button" id="timeFail">Rot</button>
           <button class="secondary-button" type="button" id="timeReset">Grau</button>
         </div>
       </form>
@@ -771,11 +727,12 @@
       e.preventDefault();
       const total = Math.max(0, Number(hours.value || 0) * 60 + Math.min(59, Number(mins.value || 0)));
       if (total <= 0) deleteEntry(dateKey, habit.id);
-      else setEntry(dateKey, habit.id, { status: 'success', minutes: total });
+      else setEntry(dateKey, habit.id, { status: 'success', minutes: total, timeMode: mode });
       saveState(); closeModal(); renderToday();
     };
     document.getElementById('timeFail').onclick = () => {
-      setEntry(dateKey, habit.id, { status: 'fail', minutes: 0 }); saveState(); closeModal(); renderToday();
+      setEntry(dateKey, habit.id, { status: 'fail', minutes: mode === 'cumulative' ? minutes : 0, timeMode: mode });
+      saveState(); closeModal(); renderToday();
     };
     document.getElementById('timeReset').onclick = () => {
       deleteEntry(dateKey, habit.id); saveState(); closeModal(); renderToday();
@@ -785,7 +742,7 @@
   function openDataTools() {
     openModal(`
       <div class="modal-head">
-        <div><div class="modal-title" id="modalTitle">Daten & Backup</div><div class="modal-subtitle">Die App speichert lokal in diesem Browser.</div></div>
+        <div><div class="modal-title" id="modalTitle">Daten & Backup</div></div>
         <button class="modal-close" data-close>×</button>
       </div>
       <div class="list">
@@ -793,7 +750,6 @@
         <button class="secondary-button full" id="importData">Backup importieren</button>
         <button class="danger-button full" id="resetData">Alle lokalen Daten löschen</button>
       </div>
-      <div class="inline-note" style="margin-top:12px">GitHub Pages speichert keine persönlichen Daten auf GitHub. Deine Einträge liegen in <code>localStorage</code> des Geräts. Für Nutzung auf mehreren Geräten wäre später Supabase/Login der nächste Schritt.</div>
     `);
     document.getElementById('exportData').onclick = exportData;
     document.getElementById('importData').onclick = () => importInput.click();
@@ -843,9 +799,10 @@
     let score = 100;
     let successCount = 0, failCount = 0, neutralCount = 0;
     for (const item of items) {
-      if (item.status === 'success') successCount++;
-      else {
-        score -= item.penalty;
+      if (item.status === 'success') {
+        successCount++;
+      } else {
+        score *= (100 - clamp(Number(item.penalty || 0), 0, 100)) / 100;
         if (item.status === 'fail') failCount++; else neutralCount++;
       }
     }
@@ -929,11 +886,20 @@
     return datesInWeek(weekStart).filter(d => habitActiveOnDate(habit, d) && getEntry(d, habitId)?.status === 'success').length;
   }
 
-  function sumMinutesInWeek(habitId, weekStart, habit) {
-    return datesInWeek(weekStart).reduce((sum, d) => {
-      if (!habitActiveOnDate(habit, d)) return sum;
-      return sum + Number(getEntry(d, habitId)?.minutes || 0);
-    }, 0);
+  function sumMinutesInWeek(habitId, weekStart, habit, throughDate = null) {
+    let total = 0;
+    const limit = throughDate || addDaysKey(weekStart, 6);
+    for (const d of datesInWeek(weekStart)) {
+      if (d > limit || !habitActiveOnDate(habit, d)) continue;
+      const entry = getEntry(d, habitId);
+      if (!entry || entry.minutes == null) continue;
+      const v = habitVersion(habit, d);
+      if (!v || v.type !== 'time_weekly') continue;
+      const mode = entry.timeMode || v.config?.entryMode || 'daily';
+      if (mode === 'cumulative') total = Number(entry.minutes || 0);
+      else total += Number(entry.minutes || 0);
+    }
+    return Math.max(0, total);
   }
 
   // Anchored cycles are scored in the week containing the END of the allowed window.
@@ -1100,7 +1066,7 @@
   function defaultConfigForType(type) {
     if (type === 'daily_boolean') return { weekdays: [0,1,2,3,4,5,6] };
     if (type === 'weekly_count') return { targetCount: 1 };
-    if (type === 'time_weekly') return { targetMinutes: 10 * 60 };
+    if (type === 'time_weekly') return { targetMinutes: 10 * 60, entryMode: 'daily' };
     return { everyWeeks: 1, anchorDate: nextWeekdayKey(currentLifeDateKey(), 6), windowBefore: 1, windowAfter: 2 };
   }
 
@@ -1110,7 +1076,7 @@
       return days.length === 7 ? 'jeden Tag' : days.map(i => WEEKDAYS[i]).join(', ');
     }
     if (v.type === 'weekly_count') return `${v.config.targetCount}× pro Woche`;
-    if (v.type === 'time_weekly') return `${formatDuration(v.config.targetMinutes)} pro Woche`;
+    if (v.type === 'time_weekly') return `${formatDuration(v.config.targetMinutes)} / Woche${v.config.entryMode === 'cumulative' ? ' · Wochenstand' : ''}`;
     if (v.type === 'anchored_cycle') return `alle ${v.config.everyWeeks} Wo. · Termin ${formatShortDate(v.config.anchorDate)} · Fenster −${v.config.windowBefore}/+${v.config.windowAfter} Tage`;
     return v.type;
   }
