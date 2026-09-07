@@ -801,8 +801,6 @@
       ? (entry?.minutes != null ? Number(entry.minutes) : previousWeekMinutes)
       : Number(entry?.minutes || 0);
 
-    // The wheel only works in five-minute steps. Existing older values are
-    // rounded to the nearest five minutes when the picker opens.
     const pickerMinutes = clamp(Math.round(initialMinutes / 5) * 5, 0, 168 * 60);
     const initialHours = Math.floor(pickerMinutes / 60);
     const initialMins = pickerMinutes % 60;
@@ -817,19 +815,17 @@
       </div>
       <div class="wheel-value" id="wheelValue">${formatDuration(pickerMinutes)}</div>
       <div class="wheel-picker">
-        ${wheelMarkup('hoursWheel', Array.from({ length: 169 }, (_, i) => i), 'h')}
+        ${wheelMarkup('hoursWheel', Array.from({ length: 169 }, (_, i) => i), 'Stunden')}
         <div class="wheel-separator">:</div>
-        ${wheelMarkup('minutesWheel', Array.from({ length: 12 }, (_, i) => i * 5), 'min')}
-        <div class="wheel-highlight"></div>
+        ${wheelMarkup('minutesWheel', Array.from({ length: 12 }, (_, i) => i * 5), 'Minuten')}
       </div>
     `, () => {
       const hoursEl = document.getElementById('hoursWheel');
       const minsEl = document.getElementById('minutesWheel');
       if (!hoursEl || !minsEl) return;
-      const h = wheelValue(hoursEl);
-      const m = wheelValue(minsEl);
-      const total = h * 60 + m;
-      if (total === initialMinutes) return;
+
+      const total = wheelValue(hoursEl) * 60 + wheelValue(minsEl);
+      if (total === pickerMinutes) return;
 
       if (mode === 'cumulative') {
         setEntry(dateKey, habit.id, { status: 'success', minutes: total, timeMode: mode });
@@ -848,95 +844,107 @@
     initWheel(minsEl, initialMins);
 
     const updateReadout = () => {
-      const total = wheelValue(hoursEl) * 60 + wheelValue(minsEl);
       const valueEl = document.getElementById('wheelValue');
-      if (valueEl) valueEl.textContent = formatDuration(total);
+      if (!valueEl) return;
+      valueEl.textContent = formatDuration(wheelValue(hoursEl) * 60 + wheelValue(minsEl));
     };
-    hoursEl.addEventListener('scroll', debounce(updateReadout, 24), { passive: true });
-    minsEl.addEventListener('scroll', debounce(updateReadout, 24), { passive: true });
+
+    hoursEl.addEventListener('wheelchange', updateReadout);
+    minsEl.addEventListener('wheelchange', updateReadout);
   }
 
-  function wheelMarkup(id, values, suffix) {
+  function wheelMarkup(id, values, label) {
     return `
       <div class="wheel-column">
-        <div class="wheel-scroll" id="${id}">
-          ${values.map(v => `<div class="wheel-item" data-value="${v}">${String(v).padStart(2, '0')}</div>`).join('')}
+        <div class="wheel-label">${label}</div>
+        <div class="wheel-scroll" id="${id}" tabindex="0" role="listbox" aria-label="${label}">
+          <div class="wheel-spacer" aria-hidden="true"></div>
+          ${values.map(v => `<div class="wheel-item" role="option" data-value="${v}">${String(v).padStart(2, '0')}</div>`).join('')}
+          <div class="wheel-spacer" aria-hidden="true"></div>
         </div>
-        <div class="wheel-unit">${suffix}</div>
       </div>`;
   }
 
   function initWheel(el, selectedValue) {
     if (!el) return;
-    const ITEM = 48;
+    const ITEM = 52;
     const items = [...el.querySelectorAll('.wheel-item')];
+    let raf = 0;
+
+    const nearestIndex = () => clamp(Math.round(el.scrollTop / ITEM), 0, items.length - 1);
+
+    const selectIndex = index => {
+      const safe = clamp(index, 0, items.length - 1);
+      items.forEach((item, i) => {
+        const selected = i === safe;
+        item.classList.toggle('selected', selected);
+        item.setAttribute('aria-selected', selected ? 'true' : 'false');
+      });
+      el.dataset.selectedIndex = String(safe);
+      el.dispatchEvent(new Event('wheelchange'));
+    };
 
     const selectedIndex = items.reduce((best, item, index) => {
       const distance = Math.abs(Number(item.dataset.value || 0) - Number(selectedValue || 0));
       return distance < best.distance ? { index, distance } : best;
     }, { index: 0, distance: Infinity }).index;
 
+    selectIndex(selectedIndex);
     requestAnimationFrame(() => {
       el.scrollTop = selectedIndex * ITEM;
     });
 
-    let snapTimer;
-    const snap = (smooth = true) => {
-      const idx = clamp(Math.round(el.scrollTop / ITEM), 0, items.length - 1);
-      el.scrollTo({ top: idx * ITEM, behavior: smooth ? 'smooth' : 'auto' });
-    };
-
-    // Touch uses the browser's native momentum scrolling. This is much more
-    // reliable on iOS/Android than intercepting the gesture with pointer events.
     el.addEventListener('scroll', () => {
-      clearTimeout(snapTimer);
-      snapTimer = setTimeout(() => snap(true), 90);
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => selectIndex(nearestIndex()));
     }, { passive: true });
 
     el.addEventListener('click', e => {
       const item = e.target.closest('.wheel-item');
       if (!item) return;
-      const idx = items.indexOf(item);
-      if (idx >= 0) el.scrollTo({ top: idx * ITEM, behavior: 'smooth' });
+      const index = items.indexOf(item);
+      if (index < 0) return;
+      el.scrollTo({ top: index * ITEM, behavior: 'smooth' });
     });
 
-    // Desktop: allow click-and-drag with the mouse as well as mouse-wheel/trackpad.
-    let mouseDragging = false;
-    let startY = 0;
-    let startScroll = 0;
-
-    el.addEventListener('pointerdown', e => {
-      if (e.pointerType !== 'mouse' || e.button !== 0) return;
-      mouseDragging = true;
-      startY = e.clientY;
-      startScroll = el.scrollTop;
-      el.setPointerCapture?.(e.pointerId);
-      el.classList.add('drag-active');
-    });
-
-    el.addEventListener('pointermove', e => {
-      if (!mouseDragging) return;
+    // Desktop browsers do not natively drag-scroll overflow containers with the
+    // left mouse button. This tiny mouse-only helper adds that behaviour without
+    // touching mobile/touch scrolling at all.
+    el.addEventListener('mousedown', e => {
+      if (e.button !== 0) return;
       e.preventDefault();
-      el.scrollTop = startScroll + (startY - e.clientY);
+      const startY = e.clientY;
+      const startTop = el.scrollTop;
+      el.classList.add('mouse-dragging');
+
+      const onMove = ev => {
+        el.scrollTop = startTop + (startY - ev.clientY);
+      };
+      const onUp = () => {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        el.classList.remove('mouse-dragging');
+      };
+
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp, { once: true });
     });
 
-    const endMouseDrag = e => {
-      if (!mouseDragging) return;
-      mouseDragging = false;
-      el.releasePointerCapture?.(e.pointerId);
-      el.classList.remove('drag-active');
-      snap(true);
-    };
-
-    el.addEventListener('pointerup', endMouseDrag);
-    el.addEventListener('pointercancel', endMouseDrag);
+    el.addEventListener('keydown', e => {
+      if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+      e.preventDefault();
+      const direction = e.key === 'ArrowDown' ? 1 : -1;
+      const index = clamp(nearestIndex() + direction, 0, items.length - 1);
+      el.scrollTo({ top: index * ITEM, behavior: 'smooth' });
+    });
   }
 
-
   function wheelValue(el) {
-    if (!el || !el.children.length) return 0;
-    const idx = clamp(Math.round(el.scrollTop / 48), 0, el.children.length - 1);
-    return Number(el.children[idx]?.dataset.value || 0);
+    if (!el) return 0;
+    const items = [...el.querySelectorAll('.wheel-item')];
+    if (!items.length) return 0;
+    const index = clamp(Number(el.dataset.selectedIndex || 0), 0, items.length - 1);
+    return Number(items[index]?.dataset.value || 0);
   }
 
   // -------------------- Data --------------------
