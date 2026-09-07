@@ -595,7 +595,8 @@ h1, h2, h3, p { margin: 0; }
   scrollbar-width: none;
   padding: 91px 0;
   overscroll-behavior: contain;
-  touch-action: none;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
   cursor: ns-resize;
   user-select: none;
 }

@@ -801,8 +801,11 @@
       ? (entry?.minutes != null ? Number(entry.minutes) : previousWeekMinutes)
       : Number(entry?.minutes || 0);
 
-    const initialHours = clamp(Math.floor(initialMinutes / 60), 0, 168);
-    const initialMins = clamp(initialMinutes % 60, 0, 59);
+    // The wheel only works in five-minute steps. Existing older values are
+    // rounded to the nearest five minutes when the picker opens.
+    const pickerMinutes = clamp(Math.round(initialMinutes / 5) * 5, 0, 168 * 60);
+    const initialHours = Math.floor(pickerMinutes / 60);
+    const initialMins = pickerMinutes % 60;
 
     openModal(`
       <div class="modal-head wheel-modal-head">
@@ -812,11 +815,11 @@
         </div>
         <button class="modal-close" data-close>×</button>
       </div>
-      <div class="wheel-value" id="wheelValue">${formatDuration(initialMinutes)}</div>
+      <div class="wheel-value" id="wheelValue">${formatDuration(pickerMinutes)}</div>
       <div class="wheel-picker">
         ${wheelMarkup('hoursWheel', Array.from({ length: 169 }, (_, i) => i), 'h')}
         <div class="wheel-separator">:</div>
-        ${wheelMarkup('minutesWheel', Array.from({ length: 60 }, (_, i) => i), 'min')}
+        ${wheelMarkup('minutesWheel', Array.from({ length: 12 }, (_, i) => i * 5), 'min')}
         <div class="wheel-highlight"></div>
       </div>
     `, () => {
@@ -846,10 +849,11 @@
 
     const updateReadout = () => {
       const total = wheelValue(hoursEl) * 60 + wheelValue(minsEl);
-      document.getElementById('wheelValue').textContent = formatDuration(total);
+      const valueEl = document.getElementById('wheelValue');
+      if (valueEl) valueEl.textContent = formatDuration(total);
     };
-    hoursEl.addEventListener('scroll', debounce(updateReadout, 30));
-    minsEl.addEventListener('scroll', debounce(updateReadout, 30));
+    hoursEl.addEventListener('scroll', debounce(updateReadout, 24), { passive: true });
+    minsEl.addEventListener('scroll', debounce(updateReadout, 24), { passive: true });
   }
 
   function wheelMarkup(id, values, suffix) {
@@ -862,55 +866,70 @@
       </div>`;
   }
 
-  function initWheel(el, selected) {
+  function initWheel(el, selectedValue) {
+    if (!el) return;
     const ITEM = 48;
+    const items = [...el.querySelectorAll('.wheel-item')];
+
+    const selectedIndex = items.reduce((best, item, index) => {
+      const distance = Math.abs(Number(item.dataset.value || 0) - Number(selectedValue || 0));
+      return distance < best.distance ? { index, distance } : best;
+    }, { index: 0, distance: Infinity }).index;
+
     requestAnimationFrame(() => {
-      el.scrollTop = clamp(selected, 0, el.children.length - 1) * ITEM;
+      el.scrollTop = selectedIndex * ITEM;
     });
 
     let snapTimer;
-    const snap = () => {
-      const idx = clamp(Math.round(el.scrollTop / ITEM), 0, el.children.length - 1);
-      el.scrollTo({ top: idx * ITEM, behavior: 'smooth' });
+    const snap = (smooth = true) => {
+      const idx = clamp(Math.round(el.scrollTop / ITEM), 0, items.length - 1);
+      el.scrollTo({ top: idx * ITEM, behavior: smooth ? 'smooth' : 'auto' });
     };
 
+    // Touch uses the browser's native momentum scrolling. This is much more
+    // reliable on iOS/Android than intercepting the gesture with pointer events.
     el.addEventListener('scroll', () => {
       clearTimeout(snapTimer);
-      snapTimer = setTimeout(snap, 110);
+      snapTimer = setTimeout(() => snap(true), 90);
     }, { passive: true });
 
     el.addEventListener('click', e => {
       const item = e.target.closest('.wheel-item');
       if (!item) return;
-      const idx = [...el.children].indexOf(item);
-      el.scrollTo({ top: idx * ITEM, behavior: 'smooth' });
+      const idx = items.indexOf(item);
+      if (idx >= 0) el.scrollTo({ top: idx * ITEM, behavior: 'smooth' });
     });
 
-    let dragging = false;
+    // Desktop: allow click-and-drag with the mouse as well as mouse-wheel/trackpad.
+    let mouseDragging = false;
     let startY = 0;
     let startScroll = 0;
+
     el.addEventListener('pointerdown', e => {
-      if (e.pointerType === 'mouse' && e.button !== 0) return;
-      dragging = true;
+      if (e.pointerType !== 'mouse' || e.button !== 0) return;
+      mouseDragging = true;
       startY = e.clientY;
       startScroll = el.scrollTop;
       el.setPointerCapture?.(e.pointerId);
       el.classList.add('drag-active');
     });
+
     el.addEventListener('pointermove', e => {
-      if (!dragging) return;
+      if (!mouseDragging) return;
       e.preventDefault();
       el.scrollTop = startScroll + (startY - e.clientY);
     });
-    const endDrag = e => {
-      if (!dragging) return;
-      dragging = false;
+
+    const endMouseDrag = e => {
+      if (!mouseDragging) return;
+      mouseDragging = false;
       el.releasePointerCapture?.(e.pointerId);
       el.classList.remove('drag-active');
-      snap();
+      snap(true);
     };
-    el.addEventListener('pointerup', endDrag);
-    el.addEventListener('pointercancel', endDrag);
+
+    el.addEventListener('pointerup', endMouseDrag);
+    el.addEventListener('pointercancel', endMouseDrag);
   }
 
 
