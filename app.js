@@ -219,8 +219,7 @@
         </div>
         <div class="tile-streak">Streak ${streak}</div>
         <div class="tile-penalty">
-          <span>${escapeHtml(preview.ruleLabel)}</span>
-          <span>${escapeHtml(preview.countLabel)}</span>
+          <span>${escapeHtml(preview.label)}</span>
           <span>−${formatMoney(preview.money)}</span>
         </div>
       </button>
@@ -366,24 +365,15 @@
   }
 
   function penaltyPreview(habit, weekStart) {
-    const summary = evaluateWeek(weekStart);
-    const item = summary.items.find(x => x.habitId === habit.id);
     const v = habitVersion(habit, evaluationReferenceDate(habit, weekStart)) || latestHabitVersion(habit);
     const penalty = clamp(Number(v?.penalty || 0), 0, 100);
-    const failureCount = Number(item?.failureCount || 0);
-    const factor = Math.pow((100 - penalty) / 100, failureCount);
-
-    let ruleLabel = `−${numberClean(penalty)}%`;
-    if (v?.type === 'daily_boolean') ruleLabel += ' / Tag';
-    else if (v?.type === 'anchored_cycle') ruleLabel += ' / Zeitraum';
-    else ruleLabel += ' / Woche';
-
-    const countLabel = failureCount
-      ? `${failureCount}× → ${numberClean(factor * 100)}%`
-      : '0× → 100%';
-
-    const money = roundMoney(item?.moneyLost || 0);
-    return { ruleLabel, countLabel, money };
+    const period = v?.type === 'daily_boolean'
+      ? 'Täglich'
+      : v?.type === 'anchored_cycle'
+        ? 'Zeitraum'
+        : 'Wöchentlich';
+    const money = roundMoney(weeklyRewardForWeek(weekStart) * penalty / 100);
+    return { label: `${period} · −${numberClean(penalty)}%`, money };
   }
 
   // -------------------- Calendar --------------------
@@ -882,7 +872,14 @@
     };
 
     hoursEl.addEventListener('wheelchange', updateReadout);
-    minsEl.addEventListener('wheelchange', updateReadout);
+    minsEl.addEventListener('wheelchange', event => {
+      const wrapDelta = Number(event.detail?.wrapDelta || 0);
+      if (wrapDelta !== 0 && typeof hoursEl.setWheelValue === 'function') {
+        const nextHour = clamp(wheelValue(hoursEl) + wrapDelta, 0, 168);
+        hoursEl.setWheelValue(nextHour, 'smooth');
+      }
+      updateReadout();
+    });
   }
 
   function wheelMarkup(id, values, label, circular = false) {
@@ -905,19 +902,33 @@
     const CYCLE_ITEMS = circular ? 12 : 0;
     const CYCLE_HEIGHT = CYCLE_ITEMS * ITEM;
     let raf = 0;
-    let recentering = false;
 
     const nearestIndex = () => clamp(Math.round(el.scrollTop / ITEM), 0, items.length - 1);
 
-    const selectIndex = index => {
+    const selectIndex = (index, suppressWrap = false) => {
       const safe = clamp(index, 0, items.length - 1);
+      const previousIndex = el.dataset.selectedIndex === undefined
+        ? null
+        : clamp(Number(el.dataset.selectedIndex || 0), 0, items.length - 1);
+      const previousValue = previousIndex == null ? null : Number(items[previousIndex]?.dataset.value || 0);
+      const value = Number(items[safe]?.dataset.value || 0);
+      let wrapDelta = 0;
+
+      if (circular && !suppressWrap && previousIndex != null) {
+        const previousCycle = Math.floor(previousIndex / CYCLE_ITEMS);
+        const currentCycle = Math.floor(safe / CYCLE_ITEMS);
+        wrapDelta = currentCycle - previousCycle;
+      }
+
       items.forEach((item, i) => {
         const selected = i === safe;
         item.classList.toggle('selected', selected);
         item.setAttribute('aria-selected', selected ? 'true' : 'false');
       });
       el.dataset.selectedIndex = String(safe);
-      el.dispatchEvent(new Event('wheelchange'));
+      el.dispatchEvent(new CustomEvent('wheelchange', {
+        detail: { previousValue, value, wrapDelta }
+      }));
     };
 
     let selectedIndex;
@@ -931,30 +942,43 @@
       }, { index: 0, distance: Infinity }).index;
     }
 
-    selectIndex(selectedIndex);
+    selectIndex(selectedIndex, true);
     requestAnimationFrame(() => {
       el.scrollTop = selectedIndex * ITEM;
     });
 
-    const recenterCircular = () => {
-      if (!circular || recentering) return;
-      const index = nearestIndex();
+    el.setWheelValue = (value, behavior = 'smooth') => {
+      const target = items.reduce((best, item, index) => {
+        const distance = Math.abs(Number(item.dataset.value || 0) - Number(value || 0));
+        return distance < best.distance ? { index, distance } : best;
+      }, { index: 0, distance: Infinity }).index;
+      selectIndex(target, true);
+      el.scrollTo({ top: target * ITEM, behavior });
+    };
+
+    const recenterCircular = index => {
+      if (!circular) return index;
       if (index < CYCLE_ITEMS / 2) {
-        recentering = true;
+        const target = index + CYCLE_ITEMS;
         el.scrollTop += CYCLE_HEIGHT;
-        recentering = false;
-      } else if (index >= items.length - CYCLE_ITEMS / 2) {
-        recentering = true;
-        el.scrollTop -= CYCLE_HEIGHT;
-        recentering = false;
+        selectIndex(target, true);
+        return target;
       }
+      if (index >= items.length - CYCLE_ITEMS / 2) {
+        const target = index - CYCLE_ITEMS;
+        el.scrollTop -= CYCLE_HEIGHT;
+        selectIndex(target, true);
+        return target;
+      }
+      return index;
     };
 
     el.addEventListener('scroll', () => {
       cancelAnimationFrame(raf);
       raf = requestAnimationFrame(() => {
-        recenterCircular();
-        selectIndex(nearestIndex());
+        let index = nearestIndex();
+        const recentered = recenterCircular(index);
+        if (recentered === index) selectIndex(index);
       });
     }, { passive: true });
 
@@ -980,7 +1004,6 @@
         document.removeEventListener('mousemove', onMove);
         document.removeEventListener('mouseup', onUp);
         el.classList.remove('mouse-dragging');
-        recenterCircular();
       };
 
       document.addEventListener('mousemove', onMove);

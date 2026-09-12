@@ -269,8 +269,8 @@ h1, h2, h3, p { margin: 0; }
 
 .tile-penalty {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0,1fr));
-  gap: 4px;
+  grid-template-columns: 1fr 1fr;
+  gap: 5px;
   margin-top: 6px;
 }
 .tile-penalty span {
@@ -280,7 +280,7 @@ h1, h2, h3, p { margin: 0; }
   background: rgba(255,255,255,.68);
   border: 1px solid rgba(205,213,224,.66);
   color: #6e7685;
-  font-size: 8.8px;
+  font-size: 9.5px;
   line-height: 1;
   font-weight: 780;
   text-align: center;
@@ -713,6 +713,6 @@ h1, h2, h3, p { margin: 0; }
   .tile-name { font-size: 12px; }
   .tile-symbol { font-size: 43px; }
   .tile-main { font-size: 22px; }
-  .tile-penalty span { font-size: 8px; }
+  .tile-penalty span { font-size: 8.6px; }
   .tile-streak { font-size: 9px; }
 }
