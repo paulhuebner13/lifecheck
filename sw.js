@@ -1,4 +1,4 @@
-const CACHE = 'lifecheck-v1.5.0';
+const CACHE = 'lifecheck-v1.6.0';
 const ASSETS = [
   './',
   './index.html',

@@ -35,7 +35,7 @@
         timeDailyGreenPercent: 80
       },
       habits: [
-        makeHabit('uni', start, 'Uni', 'time_weekly', 20, 0, { targetMinutes: 15 * 60, entryMode: 'daily' }),
+        makeHabit('uni', start, 'Uni', 'time_weekly', 20, 0, { targetMinutes: 15 * 60, entryMode: 'cumulative' }),
         makeHabit('arbeit', start, 'Arbeit', 'time_weekly', 15, 1, { targetMinutes: 20 * 60, entryMode: 'cumulative' }),
         makeHabit('kein-porn', start, 'Kein Porn', 'daily_boolean', 20, 2, {}),
         makeHabit('aufraeumen', start, 'Aufräumen', 'daily_boolean', 10, 3, {}),
@@ -158,7 +158,7 @@
     pageTitle.textContent = '';
 
     const weekStart = weekStartKey(selectedDate);
-    const summary = evaluateWeek(weekStart);
+    const summary = selectedDate === today ? evaluatePreviewWeek(selectedDate) : evaluateWeek(weekStart);
     const weeklyMax = weeklyRewardForWeek(weekStart);
     const money = roundMoney(weeklyMax * summary.score / 100);
     const habits = activeHabitsOnDate(selectedDate)
@@ -215,6 +215,19 @@
         </div>
         <div class="tile-body">
           ${display.symbol ? `<div class="tile-symbol" aria-hidden="true">${display.symbol}</div>` : ''}
+          ${display.timeRows ? `
+            <div class="time-status">
+              <div class="time-status-row">
+                <span class="time-status-label">Tag</span>
+                <span class="time-status-value">${escapeHtml(display.timeRows.dayValue)}</span>
+                <span class="time-status-target">/ ${escapeHtml(display.timeRows.dayTarget)}</span>
+              </div>
+              <div class="time-status-row">
+                <span class="time-status-label">Woche</span>
+                <span class="time-status-value">${escapeHtml(display.timeRows.weekValue)}</span>
+                <span class="time-status-target">/ ${escapeHtml(display.timeRows.weekTarget)}</span>
+              </div>
+            </div>` : ''}
           ${display.main ? `<div class="tile-main ${display.small ? 'small' : ''}">${escapeHtml(display.main)}</div>` : ''}
           ${display.progress != null ? `<div class="tile-progress"><span style="width:${clamp(display.progress, 0, 100)}%"></span></div>` : ''}
           ${display.sub ? `<div class="tile-sub">${escapeHtml(display.sub)}</div>` : ''}
@@ -259,22 +272,37 @@
     }
 
     if (v.type === 'time_weekly') {
-      const weekMinutes = sumMinutesInWeek(habit.id, week, habit);
+      const weekMinutes = sumMinutesInWeek(habit.id, week, habit, dateKey);
       const dayMinutes = timeMinutesForDay(habit, dateKey);
       const target = Math.max(0, Number(v.config.targetMinutes || 0));
       const tolerance = timeToleranceFactor();
-      const weeklyGreenTarget = target * tolerance;
-      const dailyGreenTarget = (target / 7) * tolerance * tolerance;
+      const dayNumber = clamp(daysBetweenKeys(week, dateKey) + 1, 1, 7);
+      const dailyNominalTarget = target / 7;
+      const weeklyNominalTargetToDate = target * dayNumber / 7;
+      const dailyGreenTarget = dailyNominalTarget * tolerance * tolerance;
+      const weeklyGreenTargetToDate = weeklyNominalTargetToDate * tolerance;
       const hasEntry = hasTimeEntryOnDate(habit, dateKey);
       const dayClosed = dateKey < currentLifeDateKey();
       const green = target <= 0 || dayMinutes >= dailyGreenTarget;
-      const status = green ? 'success' : (dayClosed || hasEntry) ? 'fail' : 'neutral';
+      const status = green
+        ? 'success'
+        : dayClosed && !hasEntry
+          ? 'missed'
+          : hasEntry
+            ? 'fail'
+            : 'neutral';
       return {
         status,
         symbol: '',
-        main: formatDuration(dayMinutes),
-        sub: `W ${formatDuration(weekMinutes)} / ${formatDuration(weeklyGreenTarget)}`,
-        progress: weeklyGreenTarget > 0 ? (weekMinutes / weeklyGreenTarget) * 100 : 100
+        main: '',
+        sub: '',
+        timeRows: {
+          dayValue: formatDurationCompact(dayMinutes),
+          dayTarget: formatDurationCompact(dailyNominalTarget),
+          weekValue: formatDurationCompact(weekMinutes),
+          weekTarget: formatDurationCompact(weeklyNominalTargetToDate)
+        },
+        progress: weeklyGreenTargetToDate > 0 ? (weekMinutes / weeklyGreenTargetToDate) * 100 : 100
       };
     }
 
@@ -378,53 +406,65 @@
     return clamp(Number(state.settings.timeDailyGreenPercent ?? 80), 0, 100) / 100;
   }
 
-  function previewFailureCount(habit, weekStart, dateKey, targetHabit, forceSuccess = null) {
+  function timeWeekCheckpointTarget(v, dateKey) {
+    const target = Math.max(0, Number(v?.config?.targetMinutes || 0));
+    const week = weekStartKey(dateKey);
+    const dayNumber = clamp(daysBetweenKeys(week, dateKey) + 1, 1, 7);
+    return target * dayNumber / 7;
+  }
+
+  function previewFailureCount(habit, weekStart, dateKey, targetHabit = null, forceSuccess = null) {
     const ref = evaluationReferenceDate(habit, weekStart);
     const v = habitVersion(habit, ref) || latestHabitVersion(habit);
     if (!v) return 0;
-    const isTarget = habit.id === targetHabit.id;
+    const isTarget = Boolean(targetHabit && habit.id === targetHabit.id);
+    const closedWeek = isClosedWeek(weekStart);
+    const today = currentLifeDateKey();
 
     if (v.type === 'daily_boolean') {
-      const ev = evaluateHabitForWeek(habit, weekStart);
-      let failures = Math.max(0, Number(ev.failureCount || 0));
-      if (habitActiveOnDate(habit, dateKey) && habitVersion(habit, dateKey)?.type === 'daily_boolean' && dateKey <= currentLifeDateKey()) {
-        const entry = getEntry(dateKey, habit.id);
-        const previewFailure = entry?.status !== 'success';
-        const alreadyCounted = entry?.status === 'fail' || (!entry && dateKey < currentLifeDateKey());
-        if (previewFailure && !alreadyCounted) failures += 1;
-        if (isTarget && forceSuccess != null) {
-          const forcedFailure = !forceSuccess;
-          if (previewFailure && !forcedFailure) failures = Math.max(0, failures - 1);
-          if (!previewFailure && forcedFailure) failures += 1;
-        }
+      let failures = 0;
+      const cutoff = closedWeek ? addDaysKey(weekStart, 6) : minDateKey(dateKey, today);
+      for (const d of datesInWeek(weekStart)) {
+        if (d > cutoff) continue;
+        if (!habitActiveOnDate(habit, d) || habitVersion(habit, d)?.type !== 'daily_boolean') continue;
+        const entry = getEntry(d, habit.id);
+        let success = entry?.status === 'success';
+        if (isTarget && forceSuccess != null && d === dateKey) success = forceSuccess;
+        if (!success) failures += 1;
       }
       return failures;
     }
 
-    if (v.type === 'weekly_count' && isTarget) {
-      let count = weeklySuccessCount(habit.id, weekStart, habit);
-      const currentSuccess = getEntry(dateKey, habit.id)?.status === 'success';
-      if (forceSuccess != null && habitActiveOnDate(habit, dateKey)) {
-        if (currentSuccess && !forceSuccess) count = Math.max(0, count - 1);
-        if (!currentSuccess && forceSuccess) count += 1;
-      }
+    if (v.type === 'weekly_count') {
+      const cutoff = closedWeek ? addDaysKey(weekStart, 6) : minDateKey(dateKey, today);
+      let count = datesInWeek(weekStart).filter(d => {
+        if (d > cutoff || !habitActiveOnDate(habit, d)) return false;
+        if (habitVersion(habit, d)?.type !== 'weekly_count') return false;
+        if (isTarget && forceSuccess != null && d === dateKey) return forceSuccess;
+        return getEntry(d, habit.id)?.status === 'success';
+      }).length;
       return count >= Math.max(1, Number(v.config.targetCount || 1)) ? 0 : 1;
     }
 
-    if (v.type === 'time_weekly' && isTarget) {
-      if (forceSuccess != null) return forceSuccess ? 0 : 1;
-      const target = Math.max(0, Number(v.config.targetMinutes || 0)) * timeToleranceFactor();
-      return sumMinutesInWeek(habit.id, weekStart, habit) >= target ? 0 : 1;
+    if (v.type === 'time_weekly') {
+      if (isTarget && forceSuccess != null) return forceSuccess ? 0 : 1;
+      const cutoff = closedWeek ? addDaysKey(weekStart, 6) : minDateKey(dateKey, today);
+      const minutes = sumMinutesInWeek(habit.id, weekStart, habit, cutoff);
+      const nominalTarget = closedWeek
+        ? Math.max(0, Number(v.config.targetMinutes || 0))
+        : timeWeekCheckpointTarget(v, cutoff);
+      const threshold = nominalTarget * timeToleranceFactor();
+      return nominalTarget <= 0 || minutes >= threshold ? 0 : 1;
     }
 
-    if (v.type === 'anchored_cycle' && isTarget) {
+    if (v.type === 'anchored_cycle') {
+      if (closedWeek) return Math.max(0, Number(evaluateHabitForWeek(habit, weekStart).failureCount || 0));
       const cycle = cycleForDate(habit, dateKey);
       if (!cycle) return 0;
       let success = Boolean(cycleSuccessDate(habit, cycle));
-      const selectedSuccess = getEntry(dateKey, habit.id)?.status === 'success';
-      if (forceSuccess != null) {
+      if (isTarget && forceSuccess != null) {
         if (forceSuccess) success = true;
-        else if (selectedSuccess) {
+        else if (getEntry(dateKey, habit.id)?.status === 'success') {
           success = datesBetweenKeys(cycle.windowStart, cycle.windowEnd)
             .some(d => d !== dateKey && getEntry(d, habit.id)?.status === 'success');
         }
@@ -433,6 +473,24 @@
     }
 
     return Math.max(0, Number(evaluateHabitForWeek(habit, weekStart).failureCount || 0));
+  }
+
+  function evaluatePreviewWeek(dateKey) {
+    const weekStart = weekStartKey(dateKey);
+    const items = applicableHabitsForWeek(weekStart)
+      .map(habit => {
+        const ref = evaluationReferenceDate(habit, weekStart);
+        const v = habitVersion(habit, ref) || latestHabitVersion(habit);
+        if (!v) return null;
+        const failureCount = previewFailureCount(habit, weekStart, dateKey, null, null);
+        const penalty = clamp(Number(v.penalty || 0), 0, 100);
+        const factor = Math.pow((100 - penalty) / 100, failureCount);
+        return { habitId: habit.id, name: v.name, order: v.order, penalty, failureCount, factor };
+      })
+      .filter(Boolean)
+      .sort((a,b) => a.order - b.order);
+    const rawFactor = items.reduce((product, item) => product * item.factor, 1);
+    return { score: clamp(round1(rawFactor * 100), 0, 100), items };
   }
 
   function previewScore(habit, dateKey, forceSuccess = null) {
@@ -460,12 +518,10 @@
     if (!v) return { period, percentText: '0%', moneyText: formatMoney(0) };
 
     if (v.type === 'time_weekly') {
-      const current = previewScore(habit, dateKey, null);
-      const failures = previewFailureCount(habit, weekStart, dateKey, habit, null);
-      if (failures > 0) {
-        const withoutThisPenalty = previewScore(habit, dateKey, true);
-        deltaScore = current - withoutThisPenalty;
-      }
+      const currentlyPassing = previewFailureCount(habit, weekStart, dateKey, habit, null) === 0;
+      const current = previewScore(habit, dateKey, currentlyPassing);
+      const changed = previewScore(habit, dateKey, !currentlyPassing);
+      deltaScore = changed - current;
     } else if (v.type === 'anchored_cycle' && !cycleForDate(habit, dateKey)) {
       deltaScore = 0;
     } else {
@@ -904,18 +960,12 @@
 
     if (type === 'time_weekly') {
       const mins = Number(config.targetMinutes || 60);
-      const entryMode = config.entryMode || 'daily';
       box.innerHTML = `
         <div class="form-grid-2">
           <div class="form-group"><label class="form-label">Stunden</label><input class="form-input" id="targetHours" type="number" min="0" max="168" value="${Math.floor(mins / 60)}" required /></div>
           <div class="form-group"><label class="form-label">Minuten</label><input class="form-input" id="targetMinutesRemainder" type="number" min="0" max="59" value="${mins % 60}" required /></div>
         </div>
-        <div class="form-group"><label class="form-label">Eingabe</label>
-          <select class="form-select" id="timeEntryMode">
-            <option value="daily" ${entryMode === 'daily' ? 'selected' : ''}>Zeit dieses Tages</option>
-            <option value="cumulative" ${entryMode === 'cumulative' ? 'selected' : ''}>Wochenstand bis heute</option>
-          </select>
-        </div>`;
+        <div class="modal-mini">Eingabe immer als Wochenstand bis heute.</div>`;
       return;
     }
 
@@ -936,7 +986,7 @@
     if (type === 'time_weekly') {
       const h = Math.max(0, Number(document.getElementById('targetHours').value || 0));
       const m = clamp(Number(document.getElementById('targetMinutesRemainder').value || 0), 0, 59);
-      return { targetMinutes: h * 60 + m, entryMode: document.getElementById('timeEntryMode').value || 'daily' };
+      return { targetMinutes: h * 60 + m, entryMode: 'cumulative' };
     }
     return {
       everyWeeks: Math.max(1, Number(document.getElementById('everyWeeks').value || 1)),
@@ -953,7 +1003,7 @@
     const v = habitVersion(habit, dateKey);
     const entry = getEntry(dateKey, habit.id);
     const week = weekStartKey(dateKey);
-    const mode = v.config.entryMode || 'daily';
+    const mode = 'cumulative';
     const previousWeekMinutes = sumMinutesInWeek(habit.id, week, habit, addDaysKey(dateKey, -1));
     const initialMinutes = mode === 'cumulative'
       ? (entry?.minutes != null ? Number(entry.minutes) : previousWeekMinutes)
@@ -1675,14 +1725,14 @@
   function defaultConfigForType(type) {
     if (type === 'daily_boolean') return {};
     if (type === 'weekly_count') return { targetCount: 1 };
-    if (type === 'time_weekly') return { targetMinutes: 10 * 60, entryMode: 'daily' };
+    if (type === 'time_weekly') return { targetMinutes: 10 * 60, entryMode: 'cumulative' };
     return { everyWeeks: 1, anchorDate: nextWeekdayKey(currentLifeDateKey(), 6), windowBefore: 1, windowAfter: 2 };
   }
 
   function habitRuleText(v) {
     if (v.type === 'daily_boolean') return 'Täglich';
     if (v.type === 'weekly_count') return `${v.config.targetCount}× / Woche`;
-    if (v.type === 'time_weekly') return `${formatDuration(v.config.targetMinutes)} / Woche${v.config.entryMode === 'cumulative' ? ' · Wochenstand' : ''}`;
+    if (v.type === 'time_weekly') return `${formatDuration(v.config.targetMinutes)} / Woche · Wochenstand`;
     if (v.type === 'anchored_cycle') return `alle ${v.config.everyWeeks} Wo. · ${formatShortDate(v.config.anchorDate)} · −${v.config.windowBefore}/+${v.config.windowAfter}`;
     return '';
   }
@@ -1833,6 +1883,13 @@
     if (h && m) return `${h} h ${m} min`;
     if (h) return `${h} h`;
     return `${m} min`;
+  }
+
+  function formatDurationCompact(minutes) {
+    minutes = Math.max(0, Math.round(Number(minutes || 0)));
+    const h = Math.floor(minutes / 60);
+    const m = minutes % 60;
+    return `${h}:${String(m).padStart(2, '0')}`;
   }
 
   function formatMoney(value) {

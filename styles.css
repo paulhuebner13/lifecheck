@@ -236,6 +236,46 @@ h1, h2, h3, p { margin: 0; }
 }
 
 .tile-body { min-height: 68px; display: flex; flex-direction: column; align-items: stretch; justify-content: center; text-align: center; }
+.time-status {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+}
+.time-status-row {
+  display: grid;
+  grid-template-columns: 38px 1fr auto;
+  align-items: baseline;
+  gap: 4px;
+  min-width: 0;
+}
+.time-status-label {
+  color: #7b8492;
+  font-size: 9px;
+  font-weight: 800;
+  text-align: left;
+  text-transform: uppercase;
+  letter-spacing: .03em;
+}
+.time-status-value {
+  min-width: 0;
+  color: #252b34;
+  font-size: 16px;
+  line-height: 1;
+  font-weight: 860;
+  letter-spacing: -.04em;
+  text-align: right;
+}
+.time-status-target {
+  color: #8b93a0;
+  font-size: 10px;
+  line-height: 1;
+  font-weight: 760;
+  white-space: nowrap;
+}
+.status-success .time-status-value { color: var(--green); }
+.status-fail .time-status-value { color: var(--red); }
+.status-missed .time-status-value { color: var(--orange); }
 .tile-symbol {
   font-size: 48px;
   line-height: .92;
