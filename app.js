@@ -202,12 +202,14 @@
     const v = habitVersion(habit, dateKey);
     if (!v) return '';
     const display = tileDisplay(habit, v, dateKey);
-    const preview = penaltyPreview(habit, weekStartKey(dateKey));
+    const preview = impactPreview(habit, dateKey);
     const streak = habitStreak(habit, dateKey);
     const tint = Math.abs(Number(v.order || 0)) % TINT_COUNT;
+    const disabledClass = display.disabled ? ' is-disabled' : '';
+    const disabledAttr = display.disabled ? ' disabled aria-disabled="true"' : '';
 
     return `
-      <button class="tile tint-${tint} status-${display.status}" data-habit-id="${escapeAttr(habit.id)}">
+      <button class="tile tint-${tint} status-${display.status}${disabledClass}" data-habit-id="${escapeAttr(habit.id)}"${disabledAttr}>
         <div class="tile-head">
           <div class="tile-name">${escapeHtml(v.name)}</div>
         </div>
@@ -219,8 +221,9 @@
         </div>
         <div class="tile-streak">Streak ${streak}</div>
         <div class="tile-penalty">
-          <span>${escapeHtml(preview.label)}</span>
-          <span>−${formatMoney(preview.money)}</span>
+          <span>${escapeHtml(preview.period)}</span>
+          <span>${escapeHtml(preview.percentText)}</span>
+          <span>${escapeHtml(preview.moneyText)}</span>
         </div>
       </button>
     `;
@@ -245,11 +248,10 @@
     if (v.type === 'weekly_count') {
       const count = weeklySuccessCount(habit.id, week, habit);
       const target = Math.max(1, Number(v.config.targetCount || 1));
-      const weekEval = evaluateHabitForWeek(habit, week);
-      const status = weekEval.status;
+      const clickedToday = entry?.status === 'success';
       return {
-        status,
-        symbol: status === 'success' || status === 'missed' ? statusSymbol(status) : '',
+        status: clickedToday ? 'success' : 'neutral',
+        symbol: clickedToday ? statusSymbol('success') : '',
         main: '',
         sub: `${count} / ${target} diese Woche`,
         progress: (count / target) * 100
@@ -258,14 +260,21 @@
 
     if (v.type === 'time_weekly') {
       const weekMinutes = sumMinutesInWeek(habit.id, week, habit);
+      const dayMinutes = timeMinutesForDay(habit, dateKey);
       const target = Math.max(0, Number(v.config.targetMinutes || 0));
-      const weekEval = evaluateHabitForWeek(habit, week);
+      const tolerance = timeToleranceFactor();
+      const weeklyGreenTarget = target * tolerance;
+      const dailyGreenTarget = (target / 7) * tolerance * tolerance;
+      const hasEntry = hasTimeEntryOnDate(habit, dateKey);
+      const dayClosed = dateKey < currentLifeDateKey();
+      const green = target <= 0 || dayMinutes >= dailyGreenTarget;
+      const status = green ? 'success' : (dayClosed || hasEntry) ? 'fail' : 'neutral';
       return {
-        status: weekEval.status,
-        symbol: weekEval.status === 'missed' ? statusSymbol('missed') : '',
-        main: formatDuration(weekMinutes),
-        sub: `${formatDuration(target)} Wochenziel`,
-        progress: target > 0 ? (weekMinutes / target) * 100 : 0
+        status,
+        symbol: '',
+        main: formatDuration(dayMinutes),
+        sub: `W ${formatDuration(weekMinutes)} / ${formatDuration(weeklyGreenTarget)}`,
+        progress: weeklyGreenTarget > 0 ? (weekMinutes / weeklyGreenTarget) * 100 : 100
       };
     }
 
@@ -279,7 +288,8 @@
           symbol: '',
           main: '',
           sub: next ? `${days === 0 ? 'ab heute' : days === 1 ? 'ab morgen' : `in ${days} Tagen`} · Termin ${formatShortDate(next.anchor)}` : '',
-          progress: null
+          progress: null,
+          disabled: true
         };
       }
       const successDate = cycleSuccessDate(habit, cycle);
@@ -364,16 +374,130 @@
     else setEntry(dateKey, habitId, { status: 'success' });
   }
 
-  function penaltyPreview(habit, weekStart) {
-    const v = habitVersion(habit, evaluationReferenceDate(habit, weekStart)) || latestHabitVersion(habit);
-    const penalty = clamp(Number(v?.penalty || 0), 0, 100);
-    const period = v?.type === 'daily_boolean'
-      ? 'Täglich'
-      : v?.type === 'anchored_cycle'
-        ? 'Zeitraum'
-        : 'Wöchentlich';
-    const money = roundMoney(weeklyRewardForWeek(weekStart) * penalty / 100);
-    return { label: `${period} · −${numberClean(penalty)}%`, money };
+  function timeToleranceFactor() {
+    return clamp(Number(state.settings.timeDailyGreenPercent ?? 80), 0, 100) / 100;
+  }
+
+  function previewFailureCount(habit, weekStart, dateKey, targetHabit, forceSuccess = null) {
+    const ref = evaluationReferenceDate(habit, weekStart);
+    const v = habitVersion(habit, ref) || latestHabitVersion(habit);
+    if (!v) return 0;
+    const isTarget = habit.id === targetHabit.id;
+
+    if (v.type === 'daily_boolean') {
+      const ev = evaluateHabitForWeek(habit, weekStart);
+      let failures = Math.max(0, Number(ev.failureCount || 0));
+      if (habitActiveOnDate(habit, dateKey) && habitVersion(habit, dateKey)?.type === 'daily_boolean' && dateKey <= currentLifeDateKey()) {
+        const entry = getEntry(dateKey, habit.id);
+        const previewFailure = entry?.status !== 'success';
+        const alreadyCounted = entry?.status === 'fail' || (!entry && dateKey < currentLifeDateKey());
+        if (previewFailure && !alreadyCounted) failures += 1;
+        if (isTarget && forceSuccess != null) {
+          const forcedFailure = !forceSuccess;
+          if (previewFailure && !forcedFailure) failures = Math.max(0, failures - 1);
+          if (!previewFailure && forcedFailure) failures += 1;
+        }
+      }
+      return failures;
+    }
+
+    if (v.type === 'weekly_count' && isTarget) {
+      let count = weeklySuccessCount(habit.id, weekStart, habit);
+      const currentSuccess = getEntry(dateKey, habit.id)?.status === 'success';
+      if (forceSuccess != null && habitActiveOnDate(habit, dateKey)) {
+        if (currentSuccess && !forceSuccess) count = Math.max(0, count - 1);
+        if (!currentSuccess && forceSuccess) count += 1;
+      }
+      return count >= Math.max(1, Number(v.config.targetCount || 1)) ? 0 : 1;
+    }
+
+    if (v.type === 'time_weekly' && isTarget) {
+      if (forceSuccess != null) return forceSuccess ? 0 : 1;
+      const target = Math.max(0, Number(v.config.targetMinutes || 0)) * timeToleranceFactor();
+      return sumMinutesInWeek(habit.id, weekStart, habit) >= target ? 0 : 1;
+    }
+
+    if (v.type === 'anchored_cycle' && isTarget) {
+      const cycle = cycleForDate(habit, dateKey);
+      if (!cycle) return 0;
+      let success = Boolean(cycleSuccessDate(habit, cycle));
+      const selectedSuccess = getEntry(dateKey, habit.id)?.status === 'success';
+      if (forceSuccess != null) {
+        if (forceSuccess) success = true;
+        else if (selectedSuccess) {
+          success = datesBetweenKeys(cycle.windowStart, cycle.windowEnd)
+            .some(d => d !== dateKey && getEntry(d, habit.id)?.status === 'success');
+        }
+      }
+      return success ? 0 : 1;
+    }
+
+    return Math.max(0, Number(evaluateHabitForWeek(habit, weekStart).failureCount || 0));
+  }
+
+  function previewScore(habit, dateKey, forceSuccess = null) {
+    const weekStart = weekStartKey(dateKey);
+    const habits = applicableHabitsForWeek(weekStart);
+    let product = 1;
+    for (const h of habits) {
+      const ref = evaluationReferenceDate(h, weekStart);
+      const v = habitVersion(h, ref) || latestHabitVersion(h);
+      if (!v) continue;
+      const failures = previewFailureCount(h, weekStart, dateKey, habit, h.id === habit.id ? forceSuccess : null);
+      const penalty = clamp(Number(v.penalty || 0), 0, 100) / 100;
+      product *= Math.pow(1 - penalty, failures);
+    }
+    return clamp(product * 100, 0, 100);
+  }
+
+  function impactPreview(habit, dateKey) {
+    const v = habitVersion(habit, dateKey) || latestHabitVersion(habit);
+    const period = v?.type === 'daily_boolean' ? 'T' : v?.type === 'anchored_cycle' ? 'Z' : 'W';
+    const weekStart = weekStartKey(dateKey);
+    const weeklyMax = weeklyRewardForWeek(weekStart);
+    let deltaScore = 0;
+
+    if (!v) return { period, percentText: '0%', moneyText: formatMoney(0) };
+
+    if (v.type === 'time_weekly') {
+      const current = previewScore(habit, dateKey, null);
+      const failures = previewFailureCount(habit, weekStart, dateKey, habit, null);
+      if (failures > 0) {
+        const withoutThisPenalty = previewScore(habit, dateKey, true);
+        deltaScore = current - withoutThisPenalty;
+      }
+    } else if (v.type === 'anchored_cycle' && !cycleForDate(habit, dateKey)) {
+      deltaScore = 0;
+    } else {
+      const currentlySuccess = v.type === 'weekly_count'
+        ? getEntry(dateKey, habit.id)?.status === 'success'
+        : v.type === 'anchored_cycle'
+          ? getEntry(dateKey, habit.id)?.status === 'success'
+          : getEntry(dateKey, habit.id)?.status === 'success';
+      const current = previewScore(habit, dateKey, currentlySuccess);
+      const changed = previewScore(habit, dateKey, !currentlySuccess);
+      deltaScore = changed - current;
+    }
+
+    const roundedPct = round1(deltaScore);
+    const money = roundMoney(weeklyMax * deltaScore / 100);
+    const pctSign = roundedPct > 0 ? '+' : roundedPct < 0 ? '−' : '';
+    const moneySign = money > 0 ? '+' : money < 0 ? '−' : '';
+    return {
+      period,
+      percentText: `${pctSign}${numberClean(Math.abs(roundedPct))}%`,
+      moneyText: `${moneySign}${formatMoney(Math.abs(money))}`
+    };
+  }
+
+  function datesBetweenKeys(start, end) {
+    const result = [];
+    let d = start;
+    while (d <= end) {
+      result.push(d);
+      d = addDaysKey(d, 1);
+    }
+    return result;
   }
 
   // -------------------- Calendar --------------------
@@ -573,13 +697,21 @@
       .filter(h => habitActiveOnDate(h, today))
       .sort((a,b) => (habitVersion(a, today)?.order ?? 999) - (habitVersion(b, today)?.order ?? 999));
 
+    const tolerancePercent = clamp(Number(state.settings.timeDailyGreenPercent ?? 80), 0, 100);
     app.innerHTML = `
       <div class="habit-toolbar">
         <button class="primary-button" id="addHabit">+ Habit</button>
         <button class="secondary-button" id="dataTools">Daten</button>
       </div>
+      <div class="global-setting">
+        <div>
+          <span class="global-setting-label">Zeit-Ziel erfüllt ab</span>
+          <strong id="timeToleranceValue">${numberClean(tolerancePercent)}%</strong>
+        </div>
+        <input class="setting-range" id="timeTolerance" type="range" min="0" max="100" step="5" value="${tolerancePercent}" />
+      </div>
       <div class="scoring-note">
-        Täglich: jeder verpasste Tag zählt einzeln. Wochenziele und Zeitziele werden erst am Ende ihrer Woche bewertet.
+        Zeit: Woche ab Toleranzwert grün. Tagesgrün = 1/7 des Wochenziels × Toleranz × Toleranz.
       </div>
       <div class="habit-list" id="habitList">
         ${habits.map(renderHabitRow).join('') || '<div class="empty-state">Keine Habits</div>'}
@@ -588,6 +720,12 @@
 
     document.getElementById('addHabit').onclick = () => openHabitModal(null);
     document.getElementById('dataTools').onclick = openDataTools;
+    const toleranceInput = document.getElementById('timeTolerance');
+    toleranceInput.oninput = () => {
+      state.settings.timeDailyGreenPercent = clamp(Number(toleranceInput.value || 80), 0, 100);
+      document.getElementById('timeToleranceValue').textContent = `${numberClean(state.settings.timeDailyGreenPercent)}%`;
+      saveState();
+    };
     document.querySelectorAll('.habit-edit-area').forEach(btn => {
       btn.onclick = () => openHabitModal(btn.dataset.habitId);
     });
@@ -874,9 +1012,18 @@
     hoursEl.addEventListener('wheelchange', updateReadout);
     minsEl.addEventListener('wheelchange', event => {
       const wrapDelta = Number(event.detail?.wrapDelta || 0);
+      const currentHour = wheelValue(hoursEl);
+      if (wrapDelta < 0 && currentHour <= 0) {
+        minsEl.setWheelValue?.(0, 'auto');
+        updateReadout();
+        return;
+      }
       if (wrapDelta !== 0 && typeof hoursEl.setWheelValue === 'function') {
-        const nextHour = clamp(wheelValue(hoursEl) + wrapDelta, 0, 168);
+        const nextHour = clamp(currentHour + wrapDelta, 0, 168);
         hoursEl.setWheelValue(nextHour, 'smooth');
+      }
+      if (wheelValue(hoursEl) >= 168 && wheelValue(minsEl) > 0) {
+        minsEl.setWheelValue?.(0, 'auto');
       }
       updateReadout();
     });
@@ -948,10 +1095,16 @@
     });
 
     el.setWheelValue = (value, behavior = 'smooth') => {
-      const target = items.reduce((best, item, index) => {
-        const distance = Math.abs(Number(item.dataset.value || 0) - Number(value || 0));
-        return distance < best.distance ? { index, distance } : best;
-      }, { index: 0, distance: Infinity }).index;
+      let target;
+      if (circular) {
+        const base = items.slice(0, CYCLE_ITEMS).findIndex(item => Number(item.dataset.value || 0) === Number(value || 0));
+        target = CYCLE_ITEMS + (base >= 0 ? base : 0);
+      } else {
+        target = items.reduce((best, item, index) => {
+          const distance = Math.abs(Number(item.dataset.value || 0) - Number(value || 0));
+          return distance < best.distance ? { index, distance } : best;
+        }, { index: 0, distance: Infinity }).index;
+      }
       selectIndex(target, true);
       el.scrollTo({ top: target * ITEM, behavior });
     };
@@ -1213,13 +1366,14 @@
     if (v.type === 'time_weekly') {
       const minutes = sumMinutesInWeek(habit.id, weekStart, habit);
       const target = Math.max(0, Number(v.config.targetMinutes || 0));
+      const toleranceTarget = target * timeToleranceFactor();
       const closed = isClosedWeek(weekStart);
-      const success = target <= 0 || minutes >= target;
+      const success = target <= 0 || minutes >= toleranceTarget;
       const missed = closed && !success;
       return {
         applicable: true,
         status: success ? 'success' : missed ? 'missed' : 'neutral',
-        detail: `${formatDuration(minutes)} / ${formatDuration(target)}${missed ? ` · einmal −${numberClean(v.penalty)}%` : ''}`,
+        detail: `${formatDuration(minutes)} / ${formatDuration(toleranceTarget)} (${numberClean(timeToleranceFactor() * 100)}%)${missed ? ` · einmal −${numberClean(v.penalty)}%` : ''}`,
         order: v.order,
         failureCount: missed ? 1 : 0
       };
