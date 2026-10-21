@@ -244,10 +244,22 @@
     return { status, symbol:'', main:'', sub:'', timeRows:{dayValue:formatDurationCompact(dayMinutes),dayTarget:formatDurationCompact(dailyNominalTarget),weekValue:formatDurationCompact(weekMinutes),weekTarget:formatDurationCompact(weeklyNominalTargetToDate)}, progress:weeklyNominalTargetToDate>0?weekMinutes/weeklyNominalTargetToDate*100:100 };
   }
   if (v.type === 'anchored_cycle') {
-    const cycle=cycleForDate(habit,dateKey), next=nextCycleForDate(habit,dateKey);
-    if(!cycle){const days=next?daysBetweenKeys(dateKey,next.windowStart):null;return {status:'neutral',symbol:'',main:'',sub:next?`${days===0?'ab heute':days===1?'ab morgen':`in ${days} Tagen`} · ${formatShortDate(next.anchor)}`:'nicht fällig',progress:null,disabled:true};}
-    const successDate=cycleSuccessDate(habit,cycle), closedMiss=!successDate&&cycle.windowEnd<currentLifeDateKey(), clickedToday=getEntry(dateKey,habit.id)?.status==='success';
-    return {status:clickedToday?'success':closedMiss?'missed':'neutral',symbol:clickedToday?'✓':closedMiss?'!':'',main:'',sub:successDate?`erledigt ${formatShortDate(successDate)}`:`${cycleTimingText(cycle,dateKey)} · ${formatShortDate(cycle.anchor)}`,progress:null};
+    const cycle = cycleForDate(habit, dateKey) || nextCycleForDate(habit, dateKey);
+    const clickedToday = getEntry(dateKey, habit.id)?.status === 'success';
+    if (!cycle) {
+      return { status: clickedToday ? 'success' : 'neutral', symbol: clickedToday ? '✓' : '', main: '', sub: 'Rhythmus aktiv', progress: null };
+    }
+    const missed = !cycle.successDate && cycle.windowEnd < currentLifeDateKey();
+    const next = clickedToday ? nextCycleForDate(habit, addDaysKey(dateKey, 1)) : null;
+    return {
+      status: clickedToday ? 'success' : missed ? 'missed' : 'neutral',
+      symbol: clickedToday ? '✓' : missed ? '!' : '',
+      main: '',
+      sub: clickedToday && next
+        ? `erledigt · nächster Solltag ${formatShortDate(next.anchor)}`
+        : `${cycleTimingText(cycle, dateKey)} · spätestens ${formatShortDate(cycle.windowEnd)}`,
+      progress: null
+    };
   }
   return {status:'neutral',symbol:'',main:'',sub:'',progress:null};
 }
@@ -294,7 +306,6 @@
     }
 
     if (v.type === 'anchored_cycle') {
-      if (!cycleForDate(habit, dateKey)) return;
       togglePeriodSuccessEntry(dateKey, habitId);
       saveState();
       renderToday();
@@ -371,7 +382,7 @@
     const results=cycles.map(cycle=>{const successDate=cycleSuccessDate(habit,cycle),isClosed=cycle.windowEnd<today;return {cycle,successDate,missed:isClosed&&!successDate};});
     const missed=results.filter(r=>r.missed).length, completed=results.filter(r=>r.successDate).length;
     const deductionPct=results.length?penalty*missed/results.length:0;
-    return {applicable:true,status:missed?'missed':completed===results.length?'success':'neutral',order,penalty,deductionPct:round1(deductionPct),progressText:`${completed}/${results.length}`,detail:results.map(r=>`${formatShortDate(r.cycle.anchor)} · ${r.successDate?'erledigt':r.missed?'verpasst':'offen'}`).join(' · ')};
+    return {applicable:true,status:missed?'missed':completed===results.length?'success':'neutral',order,penalty,deductionPct:round1(deductionPct),progressText:`${completed}/${results.length}`,detail:results.map(r=>`Soll ${formatShortDate(r.cycle.anchor)} · ${r.successDate?`erledigt ${formatShortDate(r.successDate)}`:r.missed?'verpasst':'offen'}`).join(' · ')};
   }
   return {applicable:false,status:'neutral',detail:'',order,deductionPct:0,progressText:'',penalty};
 }
@@ -642,13 +653,11 @@
 
     box.innerHTML = `
       <div class="form-grid-2">
-        <div class="form-group"><label class="form-label">Alle X Wochen</label><input class="form-input" id="everyWeeks" type="number" min="1" max="52" value="${config.everyWeeks || 1}" required /></div>
-        <div class="form-group"><label class="form-label">Fester Termin</label><input class="form-input" id="anchorDate" type="date" value="${config.anchorDate || nextWeekdayKey(currentLifeDateKey(), 6)}" required /></div>
+        <div class="form-group"><label class="form-label">Rhythmus · alle X Wochen</label><input class="form-input" id="everyWeeks" type="number" min="1" max="52" value="${config.everyWeeks || 1}" required /></div>
+        <div class="form-group"><label class="form-label">Start- & Wunschtermin</label><input class="form-input" id="anchorDate" type="date" value="${config.anchorDate || nextWeekdayKey(currentLifeDateKey(), 6)}" required /></div>
       </div>
-      <div class="form-grid-2">
-        <div class="form-group"><label class="form-label">Tage vorher</label><input class="form-input" id="windowBefore" type="number" min="0" max="30" value="${config.windowBefore ?? 1}" required /></div>
-        <div class="form-group"><label class="form-label">Tage danach</label><input class="form-input" id="windowAfter" type="number" min="0" max="30" value="${config.windowAfter ?? 2}" required /></div>
-      </div>`;
+      <div class="form-group"><label class="form-label">Nachfrist in Tagen</label><input class="form-input" id="windowAfter" type="number" min="0" max="30" value="${config.windowAfter ?? 2}" required /></div>
+      <div class="modal-mini">Jede Erledigung startet den Rhythmus neu. Der nächste Solltermin bewegt sich pro Runde höchstens 2 Tage zurück zum Wochentag des Wunschtermins.</div>`;
   }
 
   function readTypeConfig(type) {
@@ -662,7 +671,7 @@
     return {
       everyWeeks: Math.max(1, Number(document.getElementById('everyWeeks').value || 1)),
       anchorDate: document.getElementById('anchorDate').value,
-      windowBefore: Math.max(0, Number(document.getElementById('windowBefore').value || 0)),
+      windowBefore: 0,
       windowAfter: Math.max(0, Number(document.getElementById('windowAfter').value || 0))
     };
   }
@@ -1062,120 +1071,155 @@
     return count;
   }
   function cycleStreak(habit, dateKey) {
-    const v = habitVersion(habit, dateKey);
-    if (!v || v.type !== 'anchored_cycle') return 0;
-    const everyDays = Math.max(1, Number(v.config.everyWeeks || 1)) * 7;
-    const active = cycleForDate(habit, dateKey);
-    let anchor;
-    if (active && cycleSuccessDate(habit, active)) anchor = active.anchor;
-    else {
-      const next = nextCycleForDate(habit, dateKey);
-      anchor = next ? addDaysKey(next.anchor, -everyDays) : v.config.anchorDate;
-    }
-
+    const cycles = rhythmCycles(habit, minDateKey(dateKey, currentLifeDateKey()))
+      .filter(cycle => cycle.windowEnd <= currentLifeDateKey());
     let count = 0;
-    for (let i = 0; i < 520; i++) {
-      const cycle = cycleObjectFromAnchor(habit, anchor, habitVersion(habit, anchor));
-      if (!cycle || !cycleSuccessDate(habit, cycle)) break;
+    for (let i = cycles.length - 1; i >= 0; i--) {
+      if (!cycles[i].successDate) break;
       count++;
-      anchor = addDaysKey(anchor, -everyDays);
     }
     return count;
   }
 
   // -------------------- Anchored cycles --------------------
 
-  function cyclesScoredInWeek(habit, weekStart) {
-    const weekEnd = addDaysKey(weekStart, 6);
-    const ref = evaluationReferenceDate(habit, weekStart);
-    const v = habitVersion(habit, ref) || latestHabitVersion(habit);
-    if (!v || v.type !== 'anchored_cycle' || !v.config.anchorDate) return [];
+  
 
-    const everyDays = Math.max(1, Number(v.config.everyWeeks || 1)) * 7;
-    const startProbe = addDaysKey(weekStart, -Math.max(0, Number(v.config.windowAfter || 0)) - everyDays);
-    let i = Math.floor(daysBetweenKeys(v.config.anchorDate, startProbe) / everyDays) - 1;
-    const results = [];
+  function rhythmSuccessDates(habit) {
+  return Object.keys(state.entries || {})
+    .sort()
+    .filter(dateKey =>
+      getEntry(dateKey, habit.id)?.status === 'success' &&
+      habitActiveOnDate(habit, dateKey) &&
+      habitVersion(habit, dateKey)?.type === 'anchored_cycle'
+    );
+}
 
-    for (let guard = 0; guard < 12; guard++, i++) {
-      const anchor = addDaysKey(v.config.anchorDate, i * everyDays);
-      if (anchor > addDaysKey(weekEnd, everyDays)) break;
-      const cycle = cycleObjectFromAnchor(habit, anchor, habitVersion(habit, anchor) || v);
-      if (!cycle) continue;
-      if (cycle.windowEnd >= weekStart && cycle.windowEnd <= weekEnd && habitActiveOnDate(habit, cycle.anchor)) results.push(cycle);
-    }
-    return results;
-  }
+function rhythmPreferredWeekday(v) {
+  const anchor = v?.config?.anchorDate || v?.effectiveFrom || currentLifeDateKey();
+  return weekdayMon0(anchor);
+}
 
-  function cycleForDate(habit, dateKey) {
-    const versions = [...habit.versions].sort((a,b) => b.effectiveFrom.localeCompare(a.effectiveFrom));
-    for (const v of versions) {
-      if (v.type !== 'anchored_cycle' || !v.config.anchorDate) continue;
-      const everyDays = Math.max(1, Number(v.config.everyWeeks || 1)) * 7;
-      const approx = Math.round(daysBetweenKeys(v.config.anchorDate, dateKey) / everyDays);
-      for (let i = approx - 2; i <= approx + 2; i++) {
-        const anchor = addDaysKey(v.config.anchorDate, i * everyDays);
-        const cycle = cycleObjectFromAnchor(habit, anchor, v);
-        if (!cycle) continue;
-        if (dateKey >= cycle.windowStart && dateKey <= cycle.windowEnd && habitActiveOnDate(habit, cycle.anchor)) return cycle;
-      }
-    }
-    return null;
-  }
+function rhythmCorrectDue(nominalDue, v) {
+  const wanted = rhythmPreferredWeekday(v);
+  const current = weekdayMon0(nominalDue);
+  let delta = (wanted - current + 7) % 7;
+  if (delta > 3) delta -= 7;
+  delta = clamp(delta, -2, 2);
+  return addDaysKey(nominalDue, delta);
+}
 
-  function nextCycleForDate(habit, dateKey) {
-    const v = habitVersion(habit, dateKey) || latestHabitVersion(habit);
-    if (!v || v.type !== 'anchored_cycle' || !v.config.anchorDate) return null;
-    const everyDays = Math.max(1, Number(v.config.everyWeeks || 1)) * 7;
-    let i = Math.floor(daysBetweenKeys(v.config.anchorDate, dateKey) / everyDays) - 1;
-    for (let guard = 0; guard < 30; guard++, i++) {
-      const cycle = cycleObjectFromAnchor(habit, addDaysKey(v.config.anchorDate, i * everyDays), v);
-      if (cycle && cycle.windowEnd >= dateKey && habitActiveOnDate(habit, cycle.anchor)) return cycle;
-    }
-    return null;
-  }
+function rhythmNextDue(baseDate, v) {
+  const everyDays = Math.max(1, Number(v?.config?.everyWeeks || 1)) * 7;
+  return rhythmCorrectDue(addDaysKey(baseDate, everyDays), v);
+}
 
-  function cycleObjectFromAnchor(habit, anchor, explicitVersion) {
-    const v = explicitVersion || habitVersion(habit, anchor);
-    if (!v || v.type !== 'anchored_cycle') return null;
-    const before = Math.max(0, Number(v.config.windowBefore || 0));
-    const after = Math.max(0, Number(v.config.windowAfter || 0));
-    return {
-      anchor,
-      windowStart: addDaysKey(anchor, -before),
-      windowEnd: addDaysKey(anchor, after),
+function rhythmCycles(habit, throughDate) {
+  const anchoredVersions = [...(habit.versions || [])]
+    .filter(v => v.type === 'anchored_cycle' && v.config?.anchorDate)
+    .sort((a,b) => a.effectiveFrom.localeCompare(b.effectiveFrom));
+  if (!anchoredVersions.length) return [];
+
+  const first = anchoredVersions[0];
+  let openStart = habit.createdAt > first.effectiveFrom ? habit.createdAt : first.effectiveFrom;
+  let due = first.config.anchorDate < openStart ? rhythmNextDue(openStart, first) : first.config.anchorDate;
+  const successes = rhythmSuccessDates(habit);
+  let successIndex = 0;
+  const cycles = [];
+
+  for (let guard = 0; guard < 2600; guard++) {
+    const v = habitVersion(habit, due) || first;
+    if (!v || v.type !== 'anchored_cycle') break;
+
+    const grace = Math.max(0, Number(v.config?.windowAfter ?? 0));
+    const deadline = addDaysKey(due, grace);
+
+    while (successIndex < successes.length && successes[successIndex] < openStart) successIndex++;
+    const candidate = successes[successIndex];
+    const successDate = candidate && candidate <= deadline ? candidate : null;
+
+    const cycle = {
+      anchor: due,
+      due,
+      windowStart: openStart,
+      windowEnd: deadline,
+      deadline,
+      successDate,
       version: v
     };
-  }
+    cycles.push(cycle);
 
-  function cycleSuccessDate(habit, cycle) {
-    let d = cycle.windowStart;
-    while (d <= cycle.windowEnd) {
-      if (habitActiveOnDate(habit, d) && getEntry(d, habit.id)?.status === 'success') return d;
-      d = addDaysKey(d, 1);
+    if (successDate) {
+      successIndex++;
+      openStart = addDaysKey(successDate, 1);
+      const nextVersion = habitVersion(habit, successDate) || v;
+      due = rhythmNextDue(successDate, nextVersion);
+    } else if (deadline < throughDate) {
+      openStart = addDaysKey(deadline, 1);
+      const nextVersion = habitVersion(habit, deadline) || v;
+      due = rhythmNextDue(due, nextVersion);
+    } else {
+      break;
     }
-    return null;
-  }
 
-  function cycleHasExplicitFail(habit, cycle) {
-    let d = cycle.windowStart;
-    while (d <= cycle.windowEnd) {
-      if (getEntry(d, habit.id)?.status === 'fail') return true;
-      d = addDaysKey(d, 1);
-    }
-    return false;
+    if (openStart > addDaysKey(throughDate, 400)) break;
   }
+  return cycles;
+}
 
-  function cycleTimingText(cycle, dateKey) {
-    const toAnchor = daysBetweenKeys(dateKey, cycle.anchor);
-    const toEnd = daysBetweenKeys(dateKey, cycle.windowEnd);
-    if (toAnchor > 1) return `noch ${toAnchor} Tage`;
-    if (toAnchor === 1) return 'morgen';
-    if (toAnchor === 0) return 'heute';
-    if (toEnd > 1) return `noch ${toEnd} Tage`;
-    if (toEnd === 1) return 'noch morgen';
-    if (toEnd === 0) return 'letzter Tag';
-    return '';
-  }
+function cyclesScoredInWeek(habit, weekStart) {
+  const weekEnd = addDaysKey(weekStart, 6);
+  return rhythmCycles(habit, weekEnd)
+    .filter(cycle => cycle.windowEnd >= weekStart && cycle.windowEnd <= weekEnd);
+}
+
+function cycleForDate(habit, dateKey) {
+  const cycles = rhythmCycles(habit, dateKey);
+  return cycles.find(cycle => {
+    const end = cycle.successDate || cycle.windowEnd;
+    return dateKey >= cycle.windowStart && dateKey <= end;
+  }) || null;
+}
+
+function nextCycleForDate(habit, dateKey) {
+  const lookAhead = addDaysKey(dateKey, 400);
+  const cycles = rhythmCycles(habit, lookAhead);
+  return cycles.find(cycle =>
+    cycle.windowEnd >= dateKey &&
+    (!cycle.successDate || cycle.successDate >= dateKey || cycle.windowStart >= dateKey)
+  ) || null;
+}
+
+function cycleObjectFromAnchor(habit, anchor, explicitVersion) {
+  const v = explicitVersion || habitVersion(habit, anchor);
+  if (!v || v.type !== 'anchored_cycle') return null;
+  const grace = Math.max(0, Number(v.config?.windowAfter ?? 0));
+  return { anchor, due: anchor, windowStart: anchor, windowEnd: addDaysKey(anchor, grace), deadline: addDaysKey(anchor, grace), version: v, successDate: null };
+}
+
+function cycleSuccessDate(_habit, cycle) {
+  return cycle?.successDate || null;
+}
+
+function cycleHasExplicitFail() {
+  return false;
+}
+
+function cycleTimingText(cycle, dateKey) {
+  if (!cycle) return '';
+  const toDue = daysBetweenKeys(dateKey, cycle.anchor);
+  const toEnd = daysBetweenKeys(dateKey, cycle.windowEnd);
+  if (toDue > 1) return `Soll in ${toDue} Tagen`;
+  if (toDue === 1) return 'Soll morgen';
+  if (toDue === 0) return 'heute fällig';
+  if (toEnd > 1) return `Nachfrist · noch ${toEnd} Tage`;
+  if (toEnd === 1) return 'Nachfrist · noch 1 Tag';
+  if (toEnd === 0) return 'letzter Tag der Nachfrist';
+  return 'verpasst';
+}
+
+
+  // -------------------- Rewards calculations --------------------
 
   // -------------------- Rewards calculations --------------------
 
@@ -1224,14 +1268,14 @@
     if (type === 'daily_boolean') return {};
     if (type === 'weekly_count') return { targetCount: 1 };
     if (type === 'time_weekly') return { targetMinutes: 10 * 60, entryMode: 'cumulative' };
-    return { everyWeeks: 1, anchorDate: nextWeekdayKey(currentLifeDateKey(), 6), windowBefore: 1, windowAfter: 2 };
+    return { everyWeeks: 1, anchorDate: nextWeekdayKey(currentLifeDateKey(), 6), windowBefore: 0, windowAfter: 2 };
   }
 
   function habitRuleText(v) {
     if (v.type === 'daily_boolean') return 'Täglich';
     if (v.type === 'weekly_count') return `${v.config.targetCount}× / Woche`;
     if (v.type === 'time_weekly') return `${formatDuration(v.config.targetMinutes)} / Woche · Wochenstand`;
-    if (v.type === 'anchored_cycle') return `alle ${v.config.everyWeeks} Wo. · ${formatShortDate(v.config.anchorDate)} · −${v.config.windowBefore}/+${v.config.windowAfter}`;
+    if (v.type === 'anchored_cycle') return `alle ${v.config.everyWeeks} Wo. · Ziel ${WEEKDAYS[weekdayMon0(v.config.anchorDate)]} · +${v.config.windowAfter ?? 0} Tage`;
     return '';
   }
 
