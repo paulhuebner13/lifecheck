@@ -34,21 +34,7 @@
         rewardVersions: [{ effectiveFrom: start, monthlyMax: 400 }],
         timeDailyGreenPercent: 80
       },
-      habits: [
-        makeHabit('uni', start, 'Uni', 'time_weekly', 20, 0, { targetMinutes: 15 * 60, entryMode: 'cumulative' }),
-        makeHabit('arbeit', start, 'Arbeit', 'time_weekly', 15, 1, { targetMinutes: 20 * 60, entryMode: 'cumulative' }),
-        makeHabit('kein-porn', start, 'Kein Porn', 'daily_boolean', 20, 2, {}),
-        makeHabit('aufraeumen', start, 'Aufräumen', 'daily_boolean', 10, 3, {}),
-        makeHabit('waesche', start, 'Wäsche', 'weekly_count', 5, 4, { targetCount: 1 }),
-        makeHabit('putzen', start, 'Putzen', 'weekly_count', 10, 5, { targetCount: 1 }),
-        makeHabit('bettwaesche', start, 'Bettwäsche', 'anchored_cycle', 5, 6, {
-          everyWeeks: 1,
-          anchorDate: nextWeekdayKey(start, 6),
-          windowBefore: 1,
-          windowAfter: 2
-        }),
-        makeHabit('sport', start, 'Sport', 'weekly_count', 15, 7, { targetCount: 3 })
-      ],
+      habits: [],
       entries: {},
       transfers: [],
       meta: { createdAt: new Date().toISOString(), version: 2 }
